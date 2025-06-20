@@ -1,0 +1,3047 @@
+---
+title: "An Analysis of Grades in the School of Medical Sciences (2020-2024): A Statistical Approach"
+output: pdf_document
+date: "2025-05-26"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Create a master grade sheet
+Create a master sheet for all Medsci grades from 2020 to 2024 by student user ID and login ID.
+
+## Grades for Year 2024
+
+```{r}
+library(tidyverse)
+library(readr)
+library(dplyr)
+```
+
+```{r eval=FALSE}
+library(tidyverse)
+
+# Define the path to the grades folder
+path <- "~/Downloads/MEDSCI_2024"
+
+# List all CSV files in the directory
+files <- list.files(path, pattern = "\\.csv$", full.names = TRUE)
+
+# Initialize an empty list to store the processed data frames
+grade_list <- list()
+
+for (file in files) {
+    data <- read_csv(file)
+    # Remove 2nd and 3rd rows as they don't contain actual data
+    data <- data[-c(1, 2), ]
+    # Select relevant columns
+    if ("Unposted Final Score" %in% colnames(data)) {
+        data <- data %>%
+          select(Student, SIS_User_ID = `SIS User ID`, Final_Score = `Unposted Final Score`)
+    } else {
+        data <- data %>%
+          select(Student, SIS_User_ID = `SIS User ID`, `Final Score`)
+    }
+    # Extract paper name from filename
+    paper_name <- str_replace(basename(file), "\\.csv$", "")
+    # Rename Final_Score column to paper name
+    data <- data %>%
+      rename(!!paper_name := Final_Score)
+    grade_list[[paper_name]] <- data
+}
+
+# Combine all data frames from the list by full join on SIS_User_ID and Student
+MEDSCI2024 <- reduce(grade_list, full_join, by = c("SIS_User_ID", "Student"))
+
+# Remove rows where "Student" contains "Test" as they are test students
+MEDSCI2024 <- MEDSCI2024 %>%
+  filter(!grepl("\\bTest\\b", Student, ignore.case = FALSE))
+
+# Combine the two semester columns for MEDSCI_744 (if they exist)
+if (all(c("MEDSCI_744 S1", "MEDSCI_744 S2") %in% colnames(MEDSCI2024))) {
+  MEDSCI2024 <- MEDSCI2024 %>%
+    mutate(MEDSCI_744 = coalesce(`MEDSCI_744 S1`, `MEDSCI_744 S2`)) %>%
+    select(-`MEDSCI_744 S1`, -`MEDSCI_744 S2`)
+}
+
+# Add Year column
+MEDSCI2024 <- MEDSCI2024 %>%
+  mutate(Year = 2024) %>%
+  relocate(Year, .after = SIS_User_ID)
+
+# Save the final combined data frame
+output_path <- "~/Downloads/MEDSCI2024.csv"
+write_csv(MEDSCI2024, output_path)
+
+```
+
+Review the new dataset:
+
+```{r eval=FALSE}
+library(readr)
+library(dplyr)
+# Read the combined CSV file
+data_path <- "~/Downloads/MEDSCI2024.csv"
+
+# Manually specify column types, using the actual column names
+MEDSCI2024 <- read_csv(data_path, col_types = cols(
+  Student = col_character(),      # Student name as character
+  `SIS_User_ID` = col_character(),  # Student ID as character
+  Year = col_character(), # Year as character
+  .default = col_double()         # All other columns are numeric
+))
+
+
+# Calculate the proportion of NA values in each column to ensure no numeric data is coverted to NA values
+na_proportions <- MEDSCI2024 %>%
+  summarise(across(everything(), ~ sum(is.na(.)) / n()))  # n() gives the number of rows
+
+# Print the results
+print(na_proportions)
+
+# Display the first 5 rows
+#print(head(MEDSCI2024, 5))
+
+# Basic info of the dataset
+#nrow(MEDSCI2024)
+#ncol(MEDSCI2024)
+#dim(MEDSCI2024)
+#str(MEDSCI2024)
+#summary(MEDSCI2024)
+#names(MEDSCI2024)
+
+```
+
+## Reusable function for any year
+
+```{r}
+
+library(tidyverse)
+
+process_grades_year <- function(year, base_path = "~/Downloads") {
+  path <- file.path(base_path, as.character(year))
+  files <- list.files(path, pattern = "\\.csv$", full.names = TRUE)
+  grade_list <- list()
+  
+  # Special processing for MEDSCI_744
+  medsci744_files <- files[grepl("MEDSCI_744", basename(files))]
+  other_files <- setdiff(files, medsci744_files)
+  
+  # Combine MEDSCI_744 files into a single column
+  if (length(medsci744_files) > 0) {
+    medsci744_list <- lapply(medsci744_files, function(file) {
+      data <- read_csv(file)
+      data <- data[-c(1,2), ]
+      if ("Unposted Final Score" %in% colnames(data)) {
+        data <- data %>%
+          select(Student, SIS_User_ID = `SIS User ID`, Final_Score = `Unposted Final Score`)
+      } else if ("Final Score" %in% colnames(data)) {
+        data <- data %>%
+          select(Student, SIS_User_ID = `SIS User ID`, Final_Score = `Final Score`)
+      } else {
+        warning(paste("File", basename(file), "does not contain a recognised score column. Skipping."))
+        return(NULL)
+      }
+      data %>% rename(MEDSCI_744 = Final_Score)
+    })
+    medsci744_list <- medsci744_list[!sapply(medsci744_list, is.null)]
+    if (length(medsci744_list) > 1) {
+      med_combined <- reduce(medsci744_list, full_join, by = c("SIS_User_ID", "Student"))
+      medsci_744_cols <- grep("^MEDSCI_744", colnames(med_combined), value = TRUE)
+      med_combined <- med_combined %>%
+        mutate(MEDSCI_744 = coalesce(!!!syms(medsci_744_cols))) %>%
+        select(SIS_User_ID, Student, MEDSCI_744)
+    } else if (length(medsci744_list) == 1) {
+      med_combined <- medsci744_list[[1]]
+    }
+    grade_list[["MEDSCI_744"]] <- med_combined
+  }
+  
+  # Process all other files
+  for (file in other_files) {
+    data <- read_csv(file)
+    data <- data[-c(1, 2), ]
+    if ("Unposted Final Score" %in% colnames(data)) {
+      data <- data %>%
+        select(Student, SIS_User_ID = `SIS User ID`, Final_Score = `Unposted Final Score`)
+    } else if ("Final Score" %in% colnames(data)) {
+      data <- data %>%
+        select(Student, SIS_User_ID = `SIS User ID`, Final_Score = `Final Score`)
+    } else {
+      warning(paste("File", basename(file), "does not contain a recognised score column. Skipping."))
+      next
+    }
+    paper_name <- str_extract(basename(file), "^[A-Z]+_\\d{3}")
+    if (is.na(paper_name)) {
+      warning(paste("Could not extract paper name from:", basename(file)))
+      next
+    }
+    data <- data %>%
+      rename(!!paper_name := Final_Score)
+    grade_list[[paper_name]] <- data
+  }
+  
+  # Combine all data frames from the list by full join on SIS_User_ID and Student
+  combined <- reduce(grade_list, full_join, by = c("SIS_User_ID", "Student"))
+  
+  # Remove rows where "Student" contains "Test" as they are test students
+  combined <- combined %>%
+    filter(!grepl("\\bTest\\b", Student, ignore.case = FALSE))
+  
+  # Add Year column and relocate it after SIS_User_ID
+  combined <- combined %>%
+    mutate(Year = year) %>%
+    relocate(Year, .after = SIS_User_ID)
+  
+  # Save the final combined data frame
+  output_path <- file.path(base_path, paste0("MEDSCI", year, ".csv"))
+  write_csv(combined, output_path)
+  
+  invisible(combined)
+}
+
+
+```
+
+Process grades for 2020 to 2023:
+
+```{r eval=FALSE}
+for (yr in 2020:2023) {
+  process_grades_year(yr)
+}
+
+```
+
+Review yearly data:
+
+```{r eval=FALSE}
+
+# Define a function to read and review the data for any given year
+review_medscigrades <- function(year, base_path = "~/Downloads") {
+  file_path <- file.path(base_path, paste0("MEDSCI", year, ".csv"))
+  
+  # Read data with proper column types
+  df <- read_csv(file_path, col_types = cols(
+    Student = col_character(),
+    `SIS_User_ID` = col_character(),
+    Year = col_character(),
+    .default = col_double()
+  ))
+  
+  # Calculate NA proportions
+  na_proportions <- df %>%
+    summarise(across(everything(), ~ sum(is.na(.)) / n()))
+  # Transpose to tidy format for easier filtering
+  na_props_long <- pivot_longer(na_proportions, everything(), names_to = "Column", values_to = "NA_Proportion")
+  
+  col_types <- sapply(df, class)
+  
+  # Print results and summary info
+  cat("\n----- Year:", year, "-----\n")
+  cat("\nColumns with NA proportion == 1:\n")
+  print(na_props_long %>% filter(NA_Proportion == 1))
+  cat("\nData dimensions: ", dim(df)[1], "rows x", dim(df)[2], "columns\n")
+  cat("\nColumn names:\n")
+  print(names(df))
+  cat("\nData Types (non-numeric only):\n")
+  print(col_types[!col_types %in% c("numeric", "integer", "double")])
+
+  
+  # Return the data frame (invisible so it doesn't clutter output)
+  invisible(df)
+}
+
+```
+
+```{r eval=FALSE}
+for (yr in 2020:2024) {
+  review_medscigrades(yr)
+}
+
+```
+
+## Combine 5-Year Data
+
+```{r eval=FALSE}
+library(dplyr)
+library(readr)
+
+# List of filenames
+files <- c("~/Downloads/MEDSCI2020.csv", "~/Downloads/MEDSCI2021.csv",
+           "~/Downloads/MEDSCI2022.csv", "~/Downloads/MEDSCI2023.csv",
+           "~/Downloads/MEDSCI2024.csv")
+
+# Combine files into one dataframe
+MEDSCI_2020_2024 <- files %>%
+  lapply(function(file) {
+    read_csv(file, col_types = cols(.default = col_double(),
+                                   Student = col_character(),
+                                   SIS_User_ID = col_character())) %>%
+      mutate(Year = as.character(gsub("[^0-9]", "", basename(file))))
+  }) %>%
+  bind_rows()
+
+# Arrange data to have a neat appearance
+MEDSCI_2020_2024 <- MEDSCI_2020_2024 %>%
+  select(Student, SIS_User_ID, Year, everything())
+
+# Check the combined dataset
+#head(MEDSCI_2020_2024)
+#str(MEDSCI_2020_2024)
+# Save the combined dataset
+write_csv(MEDSCI_2020_2024, "~/Downloads/MEDSCI_2020_2024.csv")
+
+```
+
+Check if there is any NA column
+```{r}
+na_summary <- sapply(MEDSCI_2020_2024, function(x) sum(is.na(x)))
+cols_all_na <- names(na_summary)[na_summary == nrow(MEDSCI_2020_2024)]
+print(cols_all_na)
+
+```
+
+### For AUT presentation, anonymizing the student information:
+
+```{r}
+MEDSCI_2020_2024_anonymized <- MEDSCI_2020_2024 %>%
+  mutate(
+    Anon_ID = dense_rank(`SIS_User_ID`),                   # Step 1: Generate Anon_ID
+    Student = paste0("Student_", Anon_ID),                 # Step 2: Overwrite Student name
+    `SIS_User_ID` = as.character(Anon_ID)                  # Step 3: Overwrite SIS User ID
+  ) %>%
+  select(-Anon_ID) %>%                                     # Step 4: Remove Anon_ID
+  mutate(
+    across(c(Year, `SIS_User_ID`, Student), as.character)  # Step 5: Ensure type
+  )
+
+```
+
+```{r}
+na_summary <- sapply(MEDSCI_2020_2024_anonymized, function(x) sum(is.na(x)))
+cols_all_na_anon <- names(na_summary)[na_summary == nrow(MEDSCI_2020_2024_anonymized)]
+print(cols_all_na_anon)
+
+```
+Save combined data:
+
+```{r}
+write_csv(MEDSCI_2020_2024_anonymized, "~/Downloads/MEDSCI_2020_2024_anonymized.csv")
+
+```
+
+
+**READ THE DATA FROM HERE**
+
+Detect students who took the same paper in multiple years with a long format:
+
+```{r eval=FALSE warning=FALSE}
+library(readr)
+library(dplyr)
+
+real_path <- "~/Downloads/MEDSCI_2020_2024.csv"
+anon_path <- "~/Downloads/MEDSCI_2020_2024_anonymized.csv"
+
+df_real <- read_csv(real_path, col_types= cols(
+  Student = col_character(),
+  `SIS_User_ID` = col_character(),
+  Year = col_character(),
+  .default = col_double()
+))
+
+df_anon <- read_csv(anon_path, col_types= cols(
+  Student = col_character(),
+  `SIS_User_ID` = col_character(),
+  Year = col_character(),
+  .default = col_double()
+))
+
+```
+
+Check format:
+```{r}
+na_summary <- sapply(df_real, function(x) sum(is.na(x)))
+cols_all_na <- names(na_summary)[na_summary == nrow(df_real)]
+na_summary_anon <- sapply(df_anon, function(x) sum(is.na(x)))
+cols_all_na_anon <- names(na_summary)[na_summary == nrow(df_anon)]
+
+print(cols_all_na)
+print(cols_all_na_anon)
+
+```
+
+```{r}
+all_long <- df_real %>%
+  pivot_longer(
+    cols = -c(Student, SIS_User_ID, Year),
+    names_to = "Paper",
+    values_to = "Grade"
+  ) %>%
+  filter(!is.na(Grade)) # Only keep actual grades
+
+```
+
+Find students with the same paper in multiple years:
+
+```{r}
+# Find duplicate (Student, ID, Paper) across years
+repeat_papers <- all_long %>%
+  group_by(Student, SIS_User_ID, Paper) %>%
+  filter(n() > 1) %>%      # More than one row: paper taken multiple years
+  arrange(SIS_User_ID, Paper, Year) %>%
+  ungroup()
+
+# Pivot wider so each year is a column
+retake_matrix <- repeat_papers %>%
+  select(Student, SIS_User_ID, Paper, Year, Grade) %>%
+  pivot_wider(names_from = Year, values_from = Grade)
+
+# Reorder columns: Student, SIS_User_ID, Paper, 2020, 2021, 2022, 2023, 2024
+desired_order <- c("Student", "SIS_User_ID", "Paper", "2020", "2021", "2022", "2023", "2024")
+retake_matrix <- retake_matrix %>%
+  select(any_of(desired_order)) %>%   # Selects only columns that exist (prevents error if a year is missing)
+  bind_cols(retake_matrix %>% select(-any_of(desired_order)))  # Appends any extra columns, if any (rare)
+
+print(retake_matrix)
+
+```
+
+
+Verifying no missing data during the anonymizing process:
+
+Check rows and column counts:
+```{r eval=FALSE}
+cat("Real: Rows =", nrow(df_real), "Cols =", ncol(df_real), "\n")
+cat("Anon: Rows =", nrow(df_anon), "Cols =", ncol(df_anon), "\n")
+
+```
+
+Check column names:
+
+```{r eval=FALSE}
+cat("Columns identical? ", identical(names(df_real), names(df_anon)), "\n")
+
+```
+
+Compare summary stats for all grade columns:
+```{r eval=FALSE}
+# Columns to compare (ignore Student, SIS_User_ID, Year)
+id_cols <- c("Student", "SIS_User_ID", "Year")
+grade_cols <- setdiff(names(df_real), id_cols)
+
+# Compare summary stats for each grade column
+compare_stats <- function(colname) {
+  real_vals <- df_real[[colname]]
+  anon_vals <- df_anon[[colname]]
+  data.frame(
+    Column = colname,
+    Mean_Real = mean(real_vals, na.rm = TRUE),
+    Mean_Anon = mean(anon_vals, na.rm = TRUE),
+    NA_Prop_Real = mean(is.na(real_vals)),
+    NA_Prop_Anon = mean(is.na(anon_vals)),
+    Min_Real = min(real_vals, na.rm = TRUE),
+    Min_Anon = min(anon_vals, na.rm = TRUE),
+    Max_Real = max(real_vals, na.rm = TRUE),
+    Max_Anon = max(anon_vals, na.rm = TRUE),
+    Identical = identical(real_vals, anon_vals)
+  )
+}
+stats_compare <- bind_rows(lapply(grade_cols, compare_stats))
+
+print(stats_compare)
+
+```
+
+All grade values are exactly the same:
+
+```{r eval = FALSE}
+all_equal_stats <- all(stats_compare$Identical)
+cat("All numeric columns match? ", all_equal_stats, "\n")
+
+```
+
+
+# Statistical Analyses for 5-Year Grade Data
+Here we should include vidualisation for 2024 grades. Simple. This has been done in MEDSCI_204 script. Remember to anonymize the student info before presenting at AUT.
+
+## Clustering Students based on Chosen Papers
+
+Classifying students based on their chosen papers can create natural cohorts, effectively substituting for missing departmental information.
+
+### Trasforming data into a binary matrix
+
+```{r}
+df <- df_anon
+# Create a binary matrix combining all rows for each student
+df_binary <- df %>%
+  select(-Year, -MEDSCI_700, -MEDSCI_703, -MEDSCI_704, -MEDSCI_705, -MEDSCI_706, 
+         -MEDSCI_707, -MEDSCI_708, -MEDSCI_709, -MEDSCI_710, -MEDSCI_712, 
+         -MEDSCI_713, -MEDSCI_714, -MEDSCI_715, -MEDSCI_716, -MEDSCI_717, 
+         -MEDSCI_718, -MEDSCI_719, -MEDSCI_720, -MEDSCI_721, -MEDSCI_722, 
+         -MEDSCI_723, -MEDSCI_727, -MEDSCI_729, -MEDSCI_730, -MEDSCI_731, 
+         -MEDSCI_732, -MEDSCI_734, -MEDSCI_735, -MEDSCI_737, -MEDSCI_738, 
+         -MEDSCI_739, -MEDSCI_741, -MEDSCI_742, -MEDSCI_743, -MEDSCI_744, 
+         -MEDSCI_745, -MEDSCI_760, -SIS_User_ID) %>%
+  group_by(Student) %>%
+  summarise(across(where(is.numeric), ~ as.numeric(any(!is.na(.)))), .groups = "drop")
+
+#head(df_binary)
+#names(df_binary)
+dim(df_binary)
+
+```
+
+Determining number of clusters:
+
+
+```{r}
+# Elbow method
+library(factoextra)
+library(cluster)
+library(vegan)
+
+# Compute distance (Gower for binary/mixed data)
+distance_matrix <- daisy(df_binary[,-c(1,2)], metric = "gower")
+
+fviz_nbclust(df_binary[,-c(1,2)], 
+             FUN = hcut, 
+             method = "wss", 
+             diss = distance_matrix)
+
+
+```
+
+
+Option A: Hierarchical Clustering (Better algorithm comparing with PAM)
+
+```{r}
+library(cluster)
+
+# Hierarchical clustering using Ward's method
+hc <- hclust(distance_matrix, method = "ward.D2")
+
+# Cut dendrogram into 7 clusters
+df_binary$Cluster <- cutree(hc, k = 7)
+
+# Print papers selected by each cluster
+cluster_summary <- df_binary %>%
+  group_by(Cluster) %>%
+  summarise(across(where(is.numeric), mean)) %>%
+  arrange(Cluster)
+
+print(cluster_summary)
+
+```
+
+
+Plot a table for the cluster summary:
+
+```{r}
+library(knitr)
+
+cluster_summary <- df_binary %>%
+  group_by(Cluster) %>%
+  summarise(across(where(is.numeric), mean)) %>%
+  arrange(Cluster)
+
+# Store cluster labels as characters
+cluster_labels <- as.character(cluster_summary$Cluster)
+
+# Remove the Cluster column for transposing
+data_to_transpose <- cluster_summary %>% select(-Cluster)
+
+# Transpose and make a data frame
+transposed <- as.data.frame(t(data_to_transpose))
+
+# Assign the original cluster labels as column names (as characters)
+colnames(transposed) <- cluster_labels
+
+# Print as table
+kable(transposed, digits = 2, caption = "Cluster Summary of Paper Selections (Mean Values)")
+
+
+```
+
+Determining the paper selection per cluster:
+
+```{r}
+# Papers selected by at least 60% of students in each cluster
+threshold <- 0.60
+papers_by_cluster <- cluster_summary %>%
+  pivot_longer(-Cluster, names_to = "Paper", values_to = "MeanSelection") %>%
+  filter(MeanSelection >= threshold) %>%
+  group_by(Cluster) %>%
+  summarise(Selected_Papers = paste(Paper, collapse = ", "))
+
+print(papers_by_cluster)
+
+
+```
+
+
+
+Option B: Partitioning Around Medoids (PAM)
+
+```{r eval = FALSE echo=FALSE}
+
+# PAM clustering
+#pam_fit <- pam(distance_matrix, diss = TRUE, k = 7)
+
+# Assign clusters
+#df_binary$Cluster_PAM <- pam_fit$clustering
+
+# Print papers selected by each cluster (PAM)
+#cluster_summary_pam <- df_binary %>%
+  #group_by(Cluster_PAM) %>%
+  #summarise(across(where(is.numeric), mean)) %>%
+  #arrange(Cluster_PAM)
+
+#print(cluster_summary_pam)
+
+#library(knitr)
+
+#cluster_summary_pam <- df_binary %>%
+  #group_by(Cluster_PAM) %>%
+  #summarise(across(where(is.numeric), mean)) %>%
+  #arrange(Cluster_PAM)
+
+# Store cluster labels as characters
+#cluster_labels <- as.character(cluster_summary_pam$Cluster_PAM)
+
+# Remove the Cluster column for transposing
+#data_to_transpose <- cluster_summary_pam %>% select(-Cluster_PAM)
+
+# Transpose and make a data frame
+#transposed_PAM <- as.data.frame(t(data_to_transpose))
+
+# Assign the original cluster labels as column names (as characters)
+#colnames(transposed_PAM) <- cluster_labels
+
+# Print as table
+#kable(transposed_PAM, digits = 2, caption = "Cluster Summary of Paper Selections (Mean Values)")
+
+
+# Determining the paper selection per cluster:
+
+# Papers selected by at least 60% of students in each cluster due to the mean of 0.47 of PHYSIOL_399 (physiology capstone project) in cluster 5
+#threshold <- 0.60
+#papers_by_cluster <- cluster_summary_pam %>%
+ # pivot_longer(-Cluster_PAM, names_to = "Paper", values_to = "MeanSelection") %>%
+ # filter(MeanSelection >= threshold) %>%
+ # group_by(Cluster_PAM) %>%
+ # summarise(Selected_Papers = paste(Paper, collapse = ", "))
+
+#print(papers_by_cluster)
+
+```
+```{r}
+#sil_width <- numeric(length(k_range))
+
+#for (i in seq_along(k_range)) {
+ # k <- k_range[i]
+ # pam_fit <- pam(distance_matrix, diss = TRUE, k = k)
+ # sil_width[i] <- pam_fit$silinfo$avg.width
+#}
+
+#plot(k_range, sil_width, type = "b",
+   #  xlab = "Number of clusters (k)", ylab = "Average silhouette width",
+   #  main = "Silhouette Method for PAM")
+
+
+```
+
+
+Visualisation of clusters:
+
+```{r eval=FALSE}
+#install.packages("factoextra")
+library(factoextra)
+
+fviz_cluster(list(data = distance_matrix, cluster = df_binary$Cluster),
+             geom = "point",
+             ellipse.type = "convex",
+             main = "Student Clusters based on Paper Selection")
+
+```
+
+3D plot:
+
+```{r}
+# Assume you want to use only the paper columns for PCA
+paper_cols <- grep("^MEDSCI_|^PHYSIOL_|^PHARMCOL_", names(df_binary), value = TRUE)
+pca_res <- prcomp(df_binary[, paper_cols], center = TRUE, scale. = TRUE)
+# Add the first 3 PCs and Cluster info to a plotting dataframe
+df_pca <- as.data.frame(pca_res$x[, 1:3])
+df_pca$Cluster <- as.factor(df_binary$Cluster)
+
+```
+
+```{r}
+library(plotly)
+
+fig <- plot_ly(
+  df_pca, x = ~PC1, y = ~PC2, z = ~PC3,
+  color = ~Cluster,
+  colors = "Set1",
+  type = "scatter3d",
+  mode = "markers",
+  marker = list(size = 4, opacity = 0.7)
+) %>%
+  layout(title = "3D Cluster Plot (First 3 Principal Components)",
+         scene = list(
+           xaxis = list(title = "PC1"),
+           yaxis = list(title = "PC2"),
+           zaxis = list(title = "PC3")
+         ))
+
+fig
+
+```
+
+Static 3D:
+```{r}
+library(scatterplot3d)
+scatterplot3d(
+  df_pca$PC1, df_pca$PC2, df_pca$PC3,
+  color = as.numeric(df_pca$Cluster),
+  pch = 19,
+  main = "3D Cluster Plot (PC1 vs PC2 vs PC3)",
+  xlab = "PC1", ylab = "PC2", zlab = "PC3"
+)
+legend("topright", legend = levels(df_pca$Cluster), col = 1:length(levels(df_pca$Cluster)), pch = 19)
+
+```
+
+
+
+## Standardized grades and cluster anonymized data (Undergrad)
+
+Now, divide the anonymized grades to cluster 5 (Physilogy), cluster 6 (Pharmocology), and cluster 7. We need to first standardize the grades by year as -
+Each year may have different exam formats, teaching staff, grading rubrics, or cohort ability.
+Standardising transforms each year’s grades to a common scale (e.g., mean 0, sd 1 for Z-scores), so that “above average in 2020” is comparable to “above average in 2023”, even if raw marks differed.
+
+## Compare Stage III papers within cohort (cluster)
+
+Firstly need to standardized the data:
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Identify all paper columns
+paper_cols <- grep("^(MEDSCI_|PHARMCOL_|PHYSIOL_)", names(df_anon), value = TRUE)
+
+# Pivot to long format
+df_long <- df_anon %>%
+  pivot_longer(cols = all_of(paper_cols), names_to = "Paper", values_to = "Grade") %>%
+  filter(!is.na(Grade))
+
+```
+
+Standardize by Year ONLY:
+
+```{r}
+# Standardize grades for each paper and year combination
+df_long <- df_long %>%
+  group_by(Year) %>%
+  mutate(Grade_z_year = (Grade - mean(Grade, na.rm = TRUE)) / sd(Grade, na.rm = TRUE)) %>%
+  ungroup()
+```
+
+In case students retook papers, keep Only the Latest Attempt per Paper per Student:
+
+```{r}
+# If a student has multiple attempts, keep the latest year
+df_long_latest <- df_long %>%
+  group_by(Student, Paper) %>%
+  filter(Year == max(Year)) %>%
+  slice_tail(n = 1) %>%
+  ungroup()
+```
+
+
+Pivot back to wide format:
+```{r}
+# One row per student, one column per paper
+df_wide <- df_long_latest %>%
+  select(Student, Paper, Grade_z_year) %>%
+  pivot_wider(names_from = Paper, values_from = Grade_z_year)
+
+# Keep only undergrad papers:
+df_ug <- df_wide %>%
+  select(-MEDSCI_700, -MEDSCI_703, -MEDSCI_704, -MEDSCI_705, -MEDSCI_706, 
+         -MEDSCI_707, -MEDSCI_708, -MEDSCI_709, -MEDSCI_710, -MEDSCI_712, 
+         -MEDSCI_713, -MEDSCI_714, -MEDSCI_715, -MEDSCI_716, -MEDSCI_717, 
+         -MEDSCI_718, -MEDSCI_719, -MEDSCI_720, -MEDSCI_721, -MEDSCI_722, 
+         -MEDSCI_723, -MEDSCI_727, -MEDSCI_729, -MEDSCI_730, -MEDSCI_731, 
+         -MEDSCI_732, -MEDSCI_734, -MEDSCI_735, -MEDSCI_737, -MEDSCI_738, 
+         -MEDSCI_739, -MEDSCI_741, -MEDSCI_742, -MEDSCI_743, -MEDSCI_744, 
+         -MEDSCI_745, -MEDSCI_760)
+#names(df_ug)
+
+```
+
+Add cluster assignment:
+
+```{r}
+df_ug <- df_ug %>%
+  left_join(df_binary %>% select(Student, Cluster), by = "Student")
+
+
+# Create dataframes for cluster 5, 6, and 7
+df_cluster5 <- df_ug %>% filter(Cluster == 5)
+df_cluster6 <- df_ug %>% filter(Cluster == 6)
+df_cluster7 <- df_ug %>% filter(Cluster == 7)
+
+#names(df_cluster5)
+#names(df_cluster6)
+#names(df_cluster7)
+#dim(df_cluster5)
+#dim(df_cluster6)
+#dim(df_cluster7)
+
+```
+
+Visualisation
+```{r}
+library(tidyr)
+library(ggplot2)
+
+# Gather Stage III papers into long format for the cluster
+df_long5 <- df_cluster5 %>%
+  pivot_longer(cols = c("MEDSCI_311", "MEDSCI_316", "MEDSCI_317", "PHYSIOL_399"),
+               names_to = "StageIII_Paper",
+               values_to = "Grade")
+
+ggplot(df_long5, aes(x = StageIII_Paper, y = Grade)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "Stage III Paper Grade Distributions in Cluster 5", y = "Standardized Grade") +
+  theme_minimal()
+
+```
+
+Print outliers:
+```{r}
+# Identify outliers for each paper in Cluster 6
+outliers_5 <- df_long5 %>%
+  group_by(StageIII_Paper) %>%
+  mutate(
+    Q1 = quantile(Grade, 0.25, na.rm = TRUE),
+    Q3 = quantile(Grade, 0.75, na.rm = TRUE),
+    IQR = Q3 - Q1,
+    Lower = Q1 - 1.5 * IQR,
+    Upper = Q3 + 1.5 * IQR,
+    IsOutlier = Grade < Lower | Grade > Upper
+  ) %>%
+  filter(IsOutlier) %>%
+  select(Student, StageIII_Paper)
+
+print(outliers_5)
+```
+
+Violin Plots:
+```{r}
+ggplot(df_long5, aes(x = StageIII_Paper, y = Grade)) +
+  geom_violin(fill = "lightgreen") +
+  geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
+  labs(title = "Stage III Paper Grade Distributions in Cluster 5", y = "Standardized Grade") +
+  theme_minimal()
+
+```
+
+Density Plots:
+
+```{r}
+ggplot(df_long5, aes(x = Grade, fill = StageIII_Paper)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density of Grades by Stage III Paper in Cluster 5") +
+  theme_minimal()
+
+
+ggplot(df_long5, aes(x = Grade)) +
+  geom_density(fill = "skyblue", alpha = 0.7) +
+  facet_wrap(~ StageIII_Paper, scales = "free") +
+  labs(title = "Density of Grades by Stage III Paper in Cluster 5") +
+  theme_minimal()
+
+```
+
+Cluster 6 (pharmacology):
+
+```{r}
+library(tidyr)
+library(ggplot2)
+
+# Define Stage III papers in cluster 6
+stage3_papers_6 <- c("MEDSCI_318", "MEDSCI_319", "MEDSCI_320", "PHARMCOL_399")
+
+# Convert to long format
+df_long6 <- df_cluster6 %>%
+  pivot_longer(cols = all_of(stage3_papers_6), names_to = "StageIII_Paper", values_to = "Grade")
+
+```
+
+Boxplot:
+```{r}
+ggplot(df_long6, aes(x = StageIII_Paper, y = Grade)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "Stage III Paper Grade Distributions in Cluster 6", y = "Standardized Grade") +
+  theme_minimal()
+
+```
+Print outlier:
+```{r}
+library(dplyr)
+
+# Identify outliers for each paper in Cluster 6
+outliers_6 <- df_long6 %>%
+  group_by(StageIII_Paper) %>%
+  mutate(
+    Q1 = quantile(Grade, 0.25, na.rm = TRUE),
+    Q3 = quantile(Grade, 0.75, na.rm = TRUE),
+    IQR = Q3 - Q1,
+    Lower = Q1 - 1.5 * IQR,
+    Upper = Q3 + 1.5 * IQR,
+    IsOutlier = Grade < Lower | Grade > Upper
+  ) %>%
+  filter(IsOutlier) %>%
+  select(Student, StageIII_Paper)
+
+print(outliers_6)
+```
+
+Violin plots:
+```{r}
+ggplot(df_long6, aes(x = StageIII_Paper, y = Grade)) +
+  geom_violin(fill = "lightgreen") +
+  geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
+  labs(title = "Violin + Boxplot: Stage III Papers, Cluster 6", y = "Standardized Grade") +
+  theme_minimal()
+
+```
+
+Density Plots:
+
+```{r}
+ggplot(df_long6, aes(x = Grade, fill = StageIII_Paper)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density Plot: Stage III Papers, Cluster 6") +
+  theme_minimal()
+
+ggplot(df_long6, aes(x = Grade)) +
+  geom_density(fill = "skyblue", alpha = 0.7) +
+  facet_wrap(~ StageIII_Paper, scales = "free") +
+  labs(title = "Faceted Density: Stage III Papers, Cluster 6") +
+  theme_minimal()
+
+```
+
+
+Cluster 7:
+
+```{r}
+# Define Stage III papers in cluster 7
+stage3_papers_7 <- c("MEDSCI_316", "MEDSCI_317", "MEDSCI_320")
+
+# Convert to long format
+df_long7 <- df_cluster7 %>%
+  pivot_longer(cols = all_of(stage3_papers_7), names_to = "StageIII_Paper", values_to = "Grade")
+
+```
+
+
+Boxplots:
+```{r}
+ggplot(df_long7, aes(x = StageIII_Paper, y = Grade)) +
+  geom_boxplot(fill = "lightcoral") +
+  labs(title = "Stage III Paper Grade Distributions in Cluster 7", y = "Standardized Grade") +
+  theme_minimal()
+
+```
+
+Print outliers:
+```{r}
+# Identify outliers for each paper in Cluster 7
+outliers_7 <- df_long7 %>%
+  group_by(StageIII_Paper) %>%
+  mutate(
+    Q1 = quantile(Grade, 0.25, na.rm = TRUE),
+    Q3 = quantile(Grade, 0.75, na.rm = TRUE),
+    IQR = Q3 - Q1,
+    Lower = Q1 - 1.5 * IQR,
+    Upper = Q3 + 1.5 * IQR,
+    IsOutlier = Grade < Lower | Grade > Upper
+  ) %>%
+  filter(IsOutlier) %>%
+  select(Student, StageIII_Paper)
+
+print(outliers_7)
+
+```
+
+Violin Plot:
+
+```{r}
+ggplot(df_long7, aes(x = StageIII_Paper, y = Grade)) +
+  geom_violin(fill = "lightgoldenrod") +
+  geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
+  labs(title = "Violin + Boxplot: Stage III Papers, Cluster 7", y = "Standardized Grade") +
+  theme_minimal()
+
+```
+
+Density plots:
+```{r}
+ggplot(df_long7, aes(x = Grade, fill = StageIII_Paper)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density Plot: Stage III Papers, Cluster 7") +
+  theme_minimal()
+
+ggplot(df_long7, aes(x = Grade)) +
+  geom_density(fill = "orchid", alpha = 0.7) +
+  facet_wrap(~ StageIII_Paper, scales = "free") +
+  labs(title = "Faceted Density: Stage III Papers, Cluster 7") +
+  theme_minimal()
+
+```
+
+Statistical tests: PHYSIOL 399 and PHARMACOL 399 are significantly different in marking comparing with other Stage III papers in the same cohort.
+
+**Stage II papers**
+```{r}
+library(tidyr)
+library(ggplot2)
+
+# Gather Stage II papers into long format for the cluster 5
+df_long5_2 <- df_cluster5 %>%
+  pivot_longer(cols = c("MEDSCI_201", "MEDSCI_205", "MEDSCI_206"),
+               names_to = "StageII_Paper",
+               values_to = "Grade")
+
+ggplot(df_long5_2, aes(x = Grade, fill = StageII_Paper)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density of Grades by Stage II Paper in Cluster 5") +
+  theme_minimal()
+
+
+# Gather Stage II papers into long format for the cluster 6
+df_long6_2 <- df_cluster6 %>%
+  pivot_longer(cols = c("MEDSCI_203", "MEDSCI_204", "MEDSCI_205"),
+               names_to = "StageII_Paper",
+               values_to = "Grade")
+
+ggplot(df_long6_2, aes(x = Grade, fill = StageII_Paper)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density of Grades by Stage II Paper in Cluster 6") +
+  theme_minimal()
+
+# Gather Stage II papers into long format for the cluster 6
+df_long7_2 <- df_cluster7 %>%
+  pivot_longer(cols = c("MEDSCI_201","MEDSCI_204", "MEDSCI_205", "MEDSCI_206"),
+               names_to = "StageII_Paper",
+               values_to = "Grade")
+
+ggplot(df_long7_2, aes(x = Grade, fill = StageII_Paper)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density of Grades by Stage II Paper in Cluster 7") +
+  theme_minimal()
+
+```
+
+
+
+
+
+
+
+
+
+
+Levene’s Test applied to test homogeneity of variance
+```{r}
+library(car)
+
+leveneTest(Grade ~ StageIII_Paper, data = df_long5)
+leveneTest(Grade ~ StageIII_Paper, data = df_long6)
+leveneTest(Grade ~ StageIII_Paper, data = df_long7)
+leveneTest(Grade ~ StageII_Paper, data = df_long5_2)
+leveneTest(Grade ~ StageII_Paper, data = df_long6_2)
+leveneTest(Grade ~ StageII_Paper, data = df_long7_2)
+```
+
+(Welch's) ANOVA / Kruskal-Wallis Test and Pairwise comparisons (if significant) - 
+```{r}
+
+# Welch's ANOVA test for cluster 5
+anova_model5 <- oneway.test(Grade ~ StageIII_Paper, data = df_long5, var.equal = FALSE)
+anova_model5
+
+# Kruskal-Wallis for cluster 5
+kruskal.test(Grade ~ StageIII_Paper, data = df_long5)
+
+# Pairwise comparisons (if significant)
+pairwise.t.test(df_long5$Grade, df_long5$StageIII_Paper, p.adjust.method = "bonferroni")
+pairwise.wilcox.test(df_long5$Grade, df_long5$StageIII_Paper, p.adjust.method = "bonferroni")
+
+# ANOVA for cluster 6
+anova_model6 <- aov(Grade ~ StageIII_Paper, data = df_long6)
+summary(anova_model6)
+
+# Kruskal-Wallis
+kruskal.test(Grade ~ StageIII_Paper, data = df_long6)
+
+# Pairwise comparisons (if significant)
+pairwise.t.test(df_long6$Grade, df_long6$StageIII_Paper, p.adjust.method = "bonferroni")
+pairwise.wilcox.test(df_long6$Grade, df_long6$StageIII_Paper, p.adjust.method = "bonferroni")
+
+# ANOVA
+anova_model7 <- aov(Grade ~ StageIII_Paper, data = df_long6)
+summary(anova_model7)
+
+# Kruskal-Wallis
+kruskal.test(Grade ~ StageIII_Paper, data = df_long7)
+
+# Pairwise comparisons (if significant)
+pairwise.t.test(df_long7$Grade, df_long7$StageIII_Paper, p.adjust.method = "bonferroni")
+pairwise.wilcox.test(df_long7$Grade, df_long7$StageIII_Paper, p.adjust.method = "bonferroni")
+
+```
+
+Residual normality for ANOVA tests (Stage III Papers):
+
+```{r}
+# Cluster 5
+# Fit linear model (Welch's ANOVA equivalent when don't pool variance)
+lm_model5 <- lm(Grade ~ StageIII_Paper, data = df_long5)
+resid5 <- residuals(lm_model5)
+
+# Normal Q-Q plot
+qqnorm(resid5)
+qqline(resid5)
+
+# Shapiro-Wilk test (for normality)
+shapiro.test(resid5)
+
+# Cluster 6
+resid6 <- residuals(anova_model6)
+qqnorm(resid6); qqline(resid6)
+shapiro.test(resid6)
+
+# Cluster 7
+resid7 <- residuals(anova_model7)
+qqnorm(resid7); qqline(resid7)
+shapiro.test(resid7)
+
+```
+
+Tests for Stage II papers:
+```{r}
+
+# Welch's ANOVA test for cluster 5
+anova_model5_2 <- oneway.test(Grade ~ StageII_Paper, data = df_long5_2, var.equal = FALSE)
+anova_model5_2
+
+# Kruskal-Wallis for cluster 5
+kruskal.test(Grade ~ StageII_Paper, data = df_long5_2)
+
+# Pairwise comparisons (if significant)
+pairwise.t.test(df_long5_2$Grade, df_long5_2$StageII_Paper, p.adjust.method = "bonferroni")
+pairwise.wilcox.test(df_long5_2$Grade, df_long5_2$StageII_Paper, p.adjust.method = "bonferroni")
+
+# ANOVA for cluster 6
+anova_model6_2 <- aov(Grade ~ StageII_Paper, data = df_long6_2)
+summary(anova_model6_2)
+
+# Kruskal-Wallis
+kruskal.test(Grade ~ StageII_Paper, data = df_long6_2)
+
+# Pairwise comparisons (if significant)
+pairwise.t.test(df_long6_2$Grade, df_long6_2$StageII_Paper, p.adjust.method = "bonferroni")
+pairwise.wilcox.test(df_long6_2$Grade, df_long6_2$StageII_Paper, p.adjust.method = "bonferroni")
+
+# Welch's ANOVA
+anova_model7_2 <- oneway.test(Grade ~ StageII_Paper, data = df_long7_2, var.equal = FALSE)
+anova_model7_2
+
+# Kruskal-Wallis
+kruskal.test(Grade ~ StageII_Paper, data = df_long7_2)
+
+# Pairwise comparisons (if significant)
+pairwise.t.test(df_long7_2$Grade, df_long7_2$StageII_Paper, p.adjust.method = "bonferroni")
+pairwise.wilcox.test(df_long7_2$Grade, df_long7_2$StageII_Paper, p.adjust.method = "bonferroni")
+```
+
+
+Residual normality for ANOVA tests (Stage II Papers):
+
+```{r}
+# Cluster 5
+# Fit linear model (Welch's ANOVA equivalent when don't pool variance)
+lm_model5_2 <- lm(Grade ~ StageII_Paper, data = df_long5_2)
+resid5_2 <- residuals(lm_model5_2)
+
+# Normal Q-Q plot
+qqnorm(resid5_2)
+qqline(resid5_2)
+
+# Shapiro-Wilk test (for normality)
+shapiro.test(resid5_2)
+
+# Cluster 6
+resid6_2 <- residuals(anova_model6_2)
+qqnorm(resid6_2); qqline(resid6_2)
+shapiro.test(resid6_2)
+
+# Cluster 7
+lm_model7_2 <- lm(Grade ~ StageII_Paper, data = df_long7_2)
+resid7_2 <- residuals(lm_model7_2)
+qqnorm(resid7_2); qqline(resid7_2)
+shapiro.test(resid7_2)
+
+```
+
+
+
+Number of data points:
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Define the Stage II and III papers for each cluster
+papers_list <- list(
+  Cluster5 = c("MEDSCI_201", "MEDSCI_205", "MEDSCI_206", "MEDSCI_311", "MEDSCI_316", "MEDSCI_317", "PHYSIOL_399"),
+  Cluster6 = c("MEDSCI_203", "MEDSCI_204", "MEDSCI_205", "MEDSCI_318", "MEDSCI_319", "MEDSCI_320", "PHARMCOL_399"),
+  Cluster7 = c("MEDSCI_201", "MEDSCI_204", "MEDSCI_205", "MEDSCI_206", "MEDSCI_316", "MEDSCI_317", "MEDSCI_320")
+)
+
+# Count non-NA grades by cluster and paper
+count_non_missing <- function(df, cluster_name, papers) {
+  df %>%
+    summarise(across(all_of(papers), ~sum(!is.na(.)))) %>%
+    pivot_longer(cols = everything(), names_to = "Paper", values_to = "Valid_Grades") %>%
+    mutate(Cluster = cluster_name)
+}
+
+# Apply to each cluster
+cluster5_counts <- count_non_missing(df_cluster5, "Cluster 5", papers_list$Cluster5)
+cluster6_counts <- count_non_missing(df_cluster6, "Cluster 6", papers_list$Cluster6)
+cluster7_counts <- count_non_missing(df_cluster7, "Cluster 7", papers_list$Cluster7)
+
+# Combine results into one table
+all_counts <- bind_rows(cluster5_counts, cluster6_counts, cluster7_counts) %>%
+  arrange(Cluster, Paper)
+
+print(all_counts)
+
+
+
+```
+
+
+
+
+## How students from different cohorts perform in the same Stage III & Stage II papers
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# Combine clusters
+df_all <- bind_rows(
+  df_cluster5 %>% mutate(Cluster = 5),
+  df_cluster6 %>% mutate(Cluster = 6),
+  df_cluster7 %>% mutate(Cluster = 7)
+)
+
+# List ALL Stage III papers 
+all_stage3_papers <- unique(c(
+  "MEDSCI_311", "MEDSCI_316", "MEDSCI_317", "PHYSIOL_399", # 5
+  "MEDSCI_318", "MEDSCI_319", "MEDSCI_320", "PHARMCOL_399", # 6
+  "MEDSCI_316", "MEDSCI_317", "MEDSCI_320" # 7
+))
+
+# Pivot to long format, keep non-NA grades only
+df_long_all <- df_all %>%
+  pivot_longer(cols = all_of(all_stage3_papers), names_to = "StageIII_Paper", values_to = "Grade") %>%
+  filter(!is.na(Grade))
+
+```
+
+Boxplot by paper and cluster:
+```{r}
+ggplot(df_long_all, aes(x = as.factor(Cluster), y = Grade, fill = as.factor(Cluster))) +
+  geom_boxplot(alpha = 0.7) +
+  facet_wrap(~StageIII_Paper, scales = "free") +
+  labs(title = "Stage III Grades by Cluster (Faceted by Paper)",
+       x = "Cluster", y = "Standardized Grade") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2")
+
+```
+
+Violin plot by paper and cluster:
+```{r}
+ggplot(df_long_all, aes(x = as.factor(Cluster), y = Grade, fill = as.factor(Cluster))) +
+  geom_violin(trim = FALSE, alpha = 0.5) +
+  geom_boxplot(width = 0.2, fill = "white", outlier.shape = NA) +
+  facet_wrap(~StageIII_Paper, scales = "free") +
+  labs(title = "Stage III Grade Distributions by Cluster", x = "Cluster", y = "Standardised Grade") +
+  theme_minimal()
+
+```
+
+
+Stage II papers
+```{r}
+
+
+# List ALL Stage III papers (update to include all possible overlaps)
+all_stage2_papers <- unique(c(
+  "MEDSCI_201", "MEDSCI_205", "MEDSCI_206", # 5
+  "MEDSCI_203", "MEDSCI_204", "MEDSCI_205", # 6
+  "MEDSCI_201", "MEDSCI_204", "MEDSCI_205", "MEDSCI_206" # 7
+))
+
+# Pivot to long format, keep non-NA grades only
+df_long_all_2 <- df_all %>%
+  pivot_longer(cols = all_of(all_stage2_papers), names_to = "StageII_Paper", values_to = "Grade") %>%
+  filter(!is.na(Grade))
+
+ggplot(df_long_all_2, aes(x = as.factor(Cluster), y = Grade, fill = as.factor(Cluster))) +
+  geom_violin(trim = FALSE, alpha = 0.5) +
+  geom_boxplot(width = 0.2, fill = "white", outlier.shape = NA) +
+  facet_wrap(~StageII_Paper, scales = "free") +
+  labs(title = "Stage II Grade Distributions by Cluster", x = "Cluster", y = "Standardised Grade") +
+  theme_minimal()
+
+```
+
+
+*Statistical Analysis: Compare Clusters for Each Paper*
+
+For some Stage III papers, student performance differs between clusters, especially for MEDSCI_317, 318, and 320.
+
+Cluster 7 is most often involved in significant differences (tends to differ from 5 or 6).
+
+For MEDSCI_311, 319, and PHYSIOL_399, there is no evidence of difference in marking or performance by cluster.
+
+
+```{r}
+library(rstatix) # For nice ANOVA and posthoc
+
+overlapping_papers <- c("MEDSCI_311", "MEDSCI_316", "MEDSCI_317", "MEDSCI_318", 
+                        "MEDSCI_319", "MEDSCI_320", "PHYSIOL_399") 
+
+for (paper in overlapping_papers) {
+  cat("\n---", paper, "---\n")
+  subdf <- df_long_all %>% filter(StageIII_Paper == paper)
+  print(aov(Grade ~ as.factor(Cluster), data = subdf) %>% summary())
+  print(kruskal.test(Grade ~ as.factor(Cluster), data = subdf))
+  
+  # Post-hoc test (pairwise Wilcoxon)
+  print(pairwise.wilcox.test(subdf$Grade, subdf$Cluster, p.adjust.method = "bonferroni"))
+}
+
+```
+
+Stage II papers:
+```{r}
+library(rstatix) # For nice ANOVA and posthoc
+
+overlapping_papers_2 <- c("MEDSCI_201", "MEDSCI_203", "MEDSCI_204", "MEDSCI_205", 
+                        "MEDSCI_206") 
+
+for (paper in overlapping_papers_2) {
+  cat("\n---", paper, "---\n")
+  subdf <- df_long_all_2 %>% filter(StageII_Paper == paper)
+  print(aov(Grade ~ as.factor(Cluster), data = subdf) %>% summary())
+  print(kruskal.test(Grade ~ as.factor(Cluster), data = subdf))
+  
+  # Post-hoc test (pairwise Wilcoxon)
+  print(pairwise.wilcox.test(subdf$Grade, subdf$Cluster, p.adjust.method = "bonferroni"))
+}
+
+```
+
+## Grades comparison during and post COVID
+During COVID: 2020, 2021, 2022 (mostly online/hybrid/remote exams)
+Post-COVID: 2023, 2024 (return to “normal” assessment)
+
+```{r}
+df_anon <- df_anon %>%
+  mutate(COVID_period = ifelse(Year %in% c(2020, 2021, 2022), "During COVID", "Post-COVID"))
+
+```
+
+
+Visualisation
+
+In long format:
+```{r}
+library(tidyr)
+# Suppose you have columns: Student, Year, [all paper columns], ...
+df_long <- df_anon %>%
+  pivot_longer(
+    cols = starts_with("MEDSCI_") | starts_with("PHYSIOL_") | starts_with("PHARMCOL_"),  # update as needed
+    names_to = "Paper",
+    values_to = "Grade"
+  )
+
+```
+
+Separate Undergrad and postgrad papers for future use:
+
+```{r}
+# List of all postgrad paper names (update as needed)
+postgrad_papers <- c(
+  "MEDSCI_700", "MEDSCI_703", "MEDSCI_704", "MEDSCI_705", "MEDSCI_706", 
+  "MEDSCI_707", "MEDSCI_708", "MEDSCI_709", "MEDSCI_710", "MEDSCI_712", 
+  "MEDSCI_713", "MEDSCI_714", "MEDSCI_715", "MEDSCI_716", "MEDSCI_717", 
+  "MEDSCI_718", "MEDSCI_719", "MEDSCI_720", "MEDSCI_721", "MEDSCI_722", 
+  "MEDSCI_723", "MEDSCI_727", "MEDSCI_729", "MEDSCI_730", "MEDSCI_731", 
+  "MEDSCI_732", "MEDSCI_734", "MEDSCI_735", "MEDSCI_737", "MEDSCI_738", 
+  "MEDSCI_739", "MEDSCI_741", "MEDSCI_742", "MEDSCI_743", "MEDSCI_744", 
+  "MEDSCI_745", "MEDSCI_760"
+)
+
+# Undergrad
+df_long_ug <- df_long %>%
+  filter(!Paper %in% postgrad_papers)
+# Postgrad
+df_long_pg <- df_long %>%
+  filter(Paper %in% postgrad_papers)
+
+```
+
+```{r warning = FALSE}
+library(ggplot2)
+
+# Standardise by paper
+df_long <- df_long %>%
+  group_by(Paper) %>%
+  mutate(Grade_z_paper = (Grade - mean(Grade, na.rm = TRUE)) / sd(Grade, na.rm = TRUE)) %>%
+  ungroup()
+
+# Standardise by Paper for undergrad data
+df_long_ug <- df_long_ug %>%
+  group_by(Paper) %>%
+  mutate(Grade_z_paper = (Grade - mean(Grade, na.rm = TRUE)) / sd(Grade, na.rm = TRUE)) %>%
+  ungroup()
+
+# Standardise by Paper for postgrad data
+df_long_pg <- df_long_pg %>%
+  group_by(Paper) %>%
+  mutate(Grade_z_paper = (Grade - mean(Grade, na.rm = TRUE)) / sd(Grade, na.rm = TRUE)) %>%
+  ungroup()
+
+
+# Boxplot
+ggplot(df_long, aes(x = COVID_period, y = Grade_z_paper, fill = COVID_period)) +
+  geom_boxplot() +
+  facet_wrap(~ Paper, scales = "free") +
+  labs(title = "Standardised Grade Distributions: COVID vs Post-COVID", y = "Standardised Grade (by Paper)") +
+  theme_minimal()
+
+# Density plot
+ggplot(df_long, aes(x = Grade_z_paper, fill = COVID_period)) +
+  geom_density(alpha = 0.4) +
+  facet_wrap(~ Paper, scales = "free") +
+  labs(title = "Density of Standardised Grades: COVID vs Post-COVID", x = "Standardised Grade (by Paper)", fill = "Period") +
+  theme_minimal()
+
+```
+
+GPA by Period (Boxplot or Pointplot)
+
+```{r}
+df_gpa <- df_long %>%
+  group_by(Student, Year, COVID_period) %>%
+  summarise(GPA = mean(Grade_z_paper, na.rm = TRUE), .groups = "drop")
+
+df_gpa_ug <- df_long_ug %>%
+  group_by(Student, Year, COVID_period) %>%
+  summarise(GPA = mean(Grade_z_paper, na.rm = TRUE), .groups = "drop")
+
+df_gpa_pg <- df_long_pg %>%
+  group_by(Student, Year, COVID_period) %>%
+  summarise(GPA = mean(Grade_z_paper, na.rm = TRUE), .groups = "drop")
+
+```
+
+```{r}
+summary(df_gpa$GPA)
+summary(df_gpa_ug$GPA)
+summary(df_gpa_pg$GPA)
+
+```
+
+GPA number of data points:
+```{r}
+library(dplyr)
+
+# All GPA
+n_by_period <- df_gpa %>%
+  filter(!is.na(GPA)) %>%
+  group_by(COVID_period) %>%
+  summarise(n = n())
+print(n_by_period)
+
+# Undergrad GPA
+n_by_period_ug <- df_gpa_ug %>%
+  filter(!is.na(GPA)) %>%
+  group_by(COVID_period) %>%
+  summarise(n = n())
+print(n_by_period_ug)
+
+# Postgrad GPA
+n_by_period_pg <- df_gpa_pg %>%
+  filter(!is.na(GPA)) %>%
+  group_by(COVID_period) %>%
+  summarise(n = n())
+print(n_by_period_pg)
+
+
+```
+
+
+Visualisation: Boxplot for Student GPA by Type and COVID period
+
+```{r}
+
+library(dplyr)
+library(ggplot2)
+
+# Add type labels and align columns
+df_gpa_all <- df_gpa %>%
+  filter(!is.na(GPA)) %>%
+  mutate(GPA_type = "All")
+
+df_gpa_ug <- df_gpa_ug %>%
+  filter(!is.na(GPA)) %>%
+  mutate(GPA_type = "Undergrad")
+
+df_gpa_pg <- df_gpa_pg %>%
+  filter(!is.na(GPA)) %>%
+  mutate(GPA_type = "Postgrad")
+
+# Combine all
+df_gpa_combined <- bind_rows(df_gpa_all, df_gpa_ug, df_gpa_pg)
+
+n_by_type_period <- df_gpa_combined %>%
+  group_by(GPA_type, COVID_period) %>%
+  summarise(n = n())
+
+df_gpa_combined <- df_gpa_combined %>%
+  left_join(n_by_type_period, by = c("GPA_type", "COVID_period")) %>%
+  mutate(label = paste0(COVID_period, "\n(n=", n, ")"))
+
+df_gpa_combined <- df_gpa_combined %>%
+  mutate(group_label = paste(GPA_type, COVID_period, sep = "\n"))
+
+ggplot(df_gpa_combined, aes(x = group_label, y = GPA, fill = GPA_type)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of Student GPA by Type and COVID Period",
+       x = "GPA Type & Period", y = "Standardised GPA (by Paper)", fill = "GPA Type") +
+  theme_minimal()
+
+```
+
+
+Mean GPA with Error Bars
+```{r}
+# All GPA
+df_gpa_summary_all <- df_gpa %>%
+  filter(!is.na(GPA)) %>%
+  group_by(COVID_period) %>%
+  summarise(mean_GPA = mean(GPA), sd_GPA = sd(GPA), n = n(), se_GPA = sd_GPA / sqrt(n)) %>%
+  mutate(GPA_type = "All")
+
+# Undergrad
+df_gpa_summary_ug <- df_gpa_ug %>%
+  filter(!is.na(GPA)) %>%
+  group_by(COVID_period) %>%
+  summarise(mean_GPA = mean(GPA), sd_GPA = sd(GPA), n = n(), se_GPA = sd_GPA / sqrt(n)) %>%
+  mutate(GPA_type = "Undergrad")
+
+# Postgrad
+df_gpa_summary_pg <- df_gpa_pg %>%
+  filter(!is.na(GPA)) %>%
+  group_by(COVID_period) %>%
+  summarise(mean_GPA = mean(GPA), sd_GPA = sd(GPA), n = n(), se_GPA = sd_GPA / sqrt(n)) %>%
+  mutate(GPA_type = "Postgrad")
+
+# Combine the summary
+df_gpa_summary_alltypes <- bind_rows(df_gpa_summary_all, df_gpa_summary_ug, df_gpa_summary_pg) %>%
+  mutate(label1 = paste0(COVID_period, "\n(n=", n, ")"))
+
+# Plot with Facets 
+ggplot(df_gpa_summary_alltypes, aes(x = COVID_period, y = mean_GPA, fill = COVID_period)) +
+  geom_col(width = 0.6, alpha = 0.7) +
+  geom_errorbar(aes(ymin = mean_GPA - se_GPA, ymax = mean_GPA + se_GPA), width = 0.2) +
+  facet_wrap(~GPA_type, nrow = 1) +
+  labs(title = "Student Mean Score by COVID Period and Group (±SE)", 
+       y = "Standardised Mean Score", x = "Period") +
+  theme_minimal()
+
+
+```
+
+Density and Histogram plots for student average score:
+```{r}
+library(dplyr)
+library(glue)
+library(ggplot2)
+
+# Density Plot (legend has n)
+n_labels <- n_by_period %>%
+  mutate(label2 = glue("{COVID_period} (n={n})"))
+
+df_gpa_density <- df_gpa %>%
+  left_join(n_labels, by = "COVID_period")
+
+ggplot(df_gpa_density, aes(x = GPA, fill = label2)) +
+  geom_density(alpha = 0.4) +
+  labs(title = "Density of Student Average Score by COVID Period",
+       x = "Standardised Average Score (by Paper)",
+       fill = "Period (n)") +
+  theme_minimal()
+
+# Histogram (facet label has n)
+df_gpa_hist <- df_gpa %>%
+  left_join(n_by_period, by = "COVID_period") %>%
+  mutate(facet_label = paste0(COVID_period, " (n=", n, ")"))
+
+ggplot(df_gpa_hist, aes(x = GPA, fill = COVID_period)) +
+  geom_histogram(position = "identity", alpha = 0.4, bins = 20) +
+  facet_wrap(~ facet_label, ncol = 1) +
+  labs(title = "Histogram of Student GPA by COVID Period",
+       x = "Standardised GPA (by Paper)",
+       y = "Count") +
+  theme_minimal()
+
+```
+
+Statiscal test for GPA during COVID and Post-Covid:
+```{r}
+# Welch's t-test for all
+t.test(GPA ~ COVID_period, data = df_gpa)
+# Wilcoxon test
+wilcox.test(GPA ~ COVID_period, data = df_gpa)
+
+# Welch's t-test for undergrad
+t.test(GPA ~ COVID_period, data = df_gpa_ug)
+# Wilcoxon rank sum test for undergrad
+wilcox.test(GPA ~ COVID_period, data = df_gpa_ug)
+
+# Welch's t-test for postgrad
+t.test(GPA ~ COVID_period, data = df_gpa_pg)
+# Wilcoxon rank sum test for postgrad
+wilcox.test(GPA ~ COVID_period, data = df_gpa_pg)
+
+```
+
+Normality check:
+Histograms & QQ Plots
+```{r}
+# Function to plot for any group
+plot_normality <- function(df, group_name = "All Students") {
+  library(ggplot2)
+  print(
+    ggplot(df, aes(x = GPA, fill = COVID_period)) +
+      geom_histogram(bins = 30, alpha = 0.5, position = "identity") +
+      facet_wrap(~ COVID_period) +
+      ggtitle(paste("Histogram of GPA:", group_name)) +
+      theme_minimal()
+  )
+  
+  print(
+    ggplot(df, aes(sample = GPA, color = COVID_period)) +
+      stat_qq() + stat_qq_line() +
+      facet_wrap(~ COVID_period) +
+      ggtitle(paste("QQ Plot of GPA:", group_name)) +
+      theme_minimal()
+  )
+}
+
+plot_normality(df_gpa, "All Students")
+plot_normality(df_gpa_ug, "Undergrad")
+plot_normality(df_gpa_pg, "Postgrad")
+
+```
+```{r}
+# Function for Shapiro-Wilk per COVID_period (n>5000, too large for this test)
+shapiro_results <- function(df, group_name = "All Students") {
+  results <- df %>%
+    group_by(COVID_period) %>%
+    summarise(
+      n = sum(!is.na(GPA)),
+      W = ifelse(n >= 3 & n <= 5000, shapiro.test(GPA)$statistic, NA),
+      p.value = ifelse(n >= 3 & n <= 5000, shapiro.test(GPA)$p.value, NA)
+    )
+  print(paste("Shapiro-Wilk normality for", group_name))
+  print(results)
+}
+
+shapiro_results(df_gpa, "All Students")
+shapiro_results(df_gpa_ug, "Undergrad")
+shapiro_results(df_gpa_pg, "Postgrad")
+
+```
+
+Bootstarpping the Mean difference as the data size is unbalanced and distribution is skewed and have outliers.
+
+The 95% CI does not include 0, which means the difference is statistically significant.
+
+*Conclusion/Best Interpretation:*
+Mean GPA is lower post-COVID (by 0.04–0.12 SDs, 95% CI), and this is statistically significant (since the CI excludes zero).
+
+```{r}
+set.seed(2024)  # For reproducibility
+n_boot <- 10000
+
+# Get observed mean difference
+mean_diff_obs <- with(df_gpa, tapply(GPA, COVID_period, mean, na.rm = TRUE))
+mean_covid <- mean(df_gpa$GPA[df_gpa$COVID_period == "During COVID"], na.rm = TRUE)
+mean_post <- mean(df_gpa$GPA[df_gpa$COVID_period == "Post-COVID"], na.rm = TRUE)
+mean_diff_obs <- mean_post - mean_covid
+
+
+# Bootstrap
+boot_diffs <- replicate(n_boot, {
+  gpa_covid <- sample(df_gpa$GPA[df_gpa$COVID_period == "During COVID"], replace = TRUE)
+  gpa_post <- sample(df_gpa$GPA[df_gpa$COVID_period == "Post-COVID"], replace = TRUE)
+  mean(gpa_post, na.rm = TRUE) - mean(gpa_covid, na.rm = TRUE)
+})
+
+# 95% confidence interval
+ci <- quantile(boot_diffs, c(0.025, 0.975))
+cat("Observed mean difference:", mean_diff_obs, "\n")
+cat("Bootstrap 95% CI:", ci, "\n")
+
+# p-value (probability of mean_diff_obs <= 0) - two-tail does not give a significant p-value
+#p_val <- mean(abs(boot_diffs) >= abs(mean_diff_obs))
+p_val <- mean(boot_diffs >= 0)
+cat("Bootstrap p-value:", p_val, "\n")
+
+# Plot
+hist(boot_diffs, breaks = 50, main = "Bootstrap distribution of mean Score difference",
+     xlab = "Mean score difference (Post-COVID - During COVID)")
+abline(v = mean_diff_obs, col = "red", lwd = 2)
+abline(v = ci, col = "blue", lty = 2)
+
+```
+
+p-value = 0.5 for two-tail test and here's the reason:
+The p-value you computed is a two-sided “as or more extreme” test:
+Prop boot_diffs > 0: 0
+None of your bootstrap mean differences are positive; all are negative!
+Prop boot_diffs < 0: 1
+All bootstrapped mean differences are negative.
+Observed mean diff: –0.08
+(Post-COVID mean GPA is lower than During COVID, by 0.08 SDs)
+Prop boot_diffs >= mean_diff_obs: ~0.50
+(About half your bootstrapped mean differences are more negative than –0.08, about half are less negative)
+Prop abs(boot_diffs) >= abs(mean_diff_obs): ~0.50
+(About half your bootstrapped samples are as extreme (in magnitude) as your observed mean difference.)
+
+In this unusual scenario (all bootstraps negative), the observed mean difference is typical of your bootstrap distribution, not at an extreme tail—so the p-value is about 0.5.
+```{r}
+cat("Prop boot_diffs > 0:", mean(boot_diffs > 0), "\n")
+cat("Prop boot_diffs < 0:", mean(boot_diffs < 0), "\n")
+cat("Observed mean diff:", mean_diff_obs, "\n")
+cat("Prop boot_diffs >= mean_diff_obs:", mean(boot_diffs >= mean_diff_obs), "\n")
+cat("Prop abs(boot_diffs) >= abs(mean_diff_obs):", mean(abs(boot_diffs) >= abs(mean_diff_obs)), "\n")
+
+```
+
+For undergrad and postgrad:
+```{r}
+bootstrap_gpa_diff <- function(df, n_boot = 10000, seed = 2024) {
+  set.seed(seed)
+  # Compute observed difference
+  mean_covid <- mean(df$GPA[df$COVID_period == "During COVID"], na.rm = TRUE)
+  mean_post  <- mean(df$GPA[df$COVID_period == "Post-COVID"], na.rm = TRUE)
+  mean_diff_obs <- mean_post - mean_covid
+  
+  # Bootstrapping
+  boot_diffs <- replicate(n_boot, {
+    gpa_covid <- sample(df$GPA[df$COVID_period == "During COVID"], replace = TRUE)
+    gpa_post  <- sample(df$GPA[df$COVID_period == "Post-COVID"], replace = TRUE)
+    mean(gpa_post, na.rm = TRUE) - mean(gpa_covid, na.rm = TRUE)
+  })
+  
+  ci <- quantile(boot_diffs, c(0.025, 0.975))
+  # One-sided p-value (probability difference ≥ 0)
+  p_val <- mean(boot_diffs >= 0)
+  
+  # Results summary
+  list(
+    mean_diff_obs = mean_diff_obs,
+    ci = ci,
+    p_val = p_val,
+    boot_diffs = boot_diffs
+  )
+}
+
+```
+
+Results: Postgrad GPA difference not significant
+```{r}
+# Undergrad
+res_ug <- bootstrap_gpa_diff(df_gpa_ug)
+cat("Undergrad:\nObserved mean difference:", res_ug$mean_diff_obs, "\n",
+    "Bootstrap 95% CI:", res_ug$ci, "\n",
+    "Bootstrap one-sided p-value:", res_ug$p_val, "\n")
+
+hist(res_ug$boot_diffs, breaks = 50, main = "Undergrad Average Score: Bootstrap Distribution",
+     xlab = "Mean score difference (Post-COVID - During COVID)")
+abline(v = res_ug$mean_diff_obs, col = "red", lwd = 2)
+abline(v = res_ug$ci, col = "blue", lty = 2)
+
+# Postgrad
+res_pg <- bootstrap_gpa_diff(df_gpa_pg)
+cat("Postgrad:\nObserved mean difference:", res_pg$mean_diff_obs, "\n",
+    "Bootstrap 95% CI:", res_pg$ci, "\n",
+    "Bootstrap one-sided p-value:", res_pg$p_val, "\n")
+
+hist(res_pg$boot_diffs, breaks = 50, main = "Postgrad Average Score: Bootstrap Distribution",
+     xlab = "Mean score difference (Post-COVID - During COVID)")
+abline(v = res_pg$mean_diff_obs, col = "red", lwd = 2)
+abline(v = res_pg$ci, col = "blue", lty = 2)
+
+```
+
+
+*Statistical Meaning*
+Statistically significant:
+Because zero is not in the interval, there is strong evidence that median GPA is lower in the Post-COVID period compared to the During-COVID period.
+
+The result is robust to skew and outliers (since you used the median and bootstrapping).
+
+
+```{r}
+boot_means <- replicate(n_boot, {
+  gpa_covid <- sample(df_gpa$GPA[df_gpa$COVID_period == "During COVID"], replace = TRUE)
+  gpa_post <- sample(df_gpa$GPA[df_gpa$COVID_period == "Post-COVID"], replace = TRUE)
+  mean(gpa_post, na.rm = TRUE) - mean(gpa_covid, na.rm = TRUE)
+})
+
+ci_mean <- quantile(boot_means, c(0.025, 0.975))
+cat("Bootstrap 95% CI for mean difference:", ci_mean, "\n")
+
+
+```
+
+Print the real GPA difference by converting the data to real SD.
+```{r}
+library(tidyr)
+df_anon_long <- df_anon %>%
+  pivot_longer(
+    cols = starts_with("MEDSCI_") | starts_with("PHYSIOL_") | starts_with("PHARMCOL_"),
+    names_to = "Paper",
+    values_to = "Grade"
+  )
+stats_lookup <- df_anon_long %>%
+  group_by(Paper) %>%
+  summarise(
+    mean_grade = mean(Grade, na.rm = TRUE),
+    sd_grade = sd(Grade, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+df_long_orig <- df_long %>%
+  left_join(stats_lookup, by = c("Paper")) %>%
+  mutate(
+    Grade_orig = Grade_z_paper * sd_grade + mean_grade
+  )
+
+
+df_gpa_orig <- df_long_orig %>%
+  group_by(Student, Year, COVID_period) %>%
+  summarise(GPA_orig = mean(Grade_orig, na.rm = TRUE), .groups = "drop")
+
+mean_sd <- mean(stats_lookup$sd_grade, na.rm = TRUE)
+ci_real <- c(-0.12, -0.04) * mean_sd
+
+print(ci_real)
+```
+
+Converting real CI for Undergrad and Postgrad:
+
+Compute mean SD for UG and PG
+```{r}
+# Calculate mean SD for undergrad
+mean_sd_ug <- df_long_ug %>%
+  left_join(stats_lookup, by = "Paper") %>%
+  summarise(mean_sd = mean(sd_grade, na.rm = TRUE)) %>%
+  pull(mean_sd)
+
+# Calculate mean SD for postgrad
+mean_sd_pg <- df_long_pg %>%
+  left_join(stats_lookup, by = "Paper") %>%
+  summarise(mean_sd = mean(sd_grade, na.rm = TRUE)) %>%
+  pull(mean_sd)
+
+```
+
+
+Compute real (original scale) CIs for mean differences
+```{r}
+# Undergrad: Convert bootstrapped CI to real scale
+ci_real_ug <- res_ug$ci * mean_sd_ug
+cat("Undergrad GPA 95% CI (original scale):", ci_real_ug, "\n")
+
+# Postgrad: Convert bootstrapped CI to real scale
+ci_real_pg <- res_pg$ci * mean_sd_pg
+cat("Postgrad GPA 95% CI (original scale):", ci_real_pg, "\n")
+
+```
+
+Bootstrap the median differences for UG/PG and transform
+```{r}
+# Overall (ALL)
+boot_medians <- replicate(n_boot, {
+  gpa_covid <- sample(df_gpa$GPA[df_gpa$COVID_period == "During COVID"], replace = TRUE)
+  gpa_post <- sample(df_gpa$GPA[df_gpa$COVID_period == "Post-COVID"], replace = TRUE)
+  median(gpa_post, na.rm = TRUE) - median(gpa_covid, na.rm = TRUE)
+})
+ci_median <- quantile(boot_medians, c(0.025, 0.975))
+ci_median_real <- ci_median * mean_sd   # Use the correct SD for scaling, if you have one
+cat("ALL GPA median difference CI (original scale):", ci_median_real, "\n")
+
+# Undergrad
+boot_medians_ug <- replicate(n_boot, {
+  gpa_covid <- sample(df_gpa_ug$GPA[df_gpa_ug$COVID_period == "During COVID"], replace = TRUE)
+  gpa_post <- sample(df_gpa_ug$GPA[df_gpa_ug$COVID_period == "Post-COVID"], replace = TRUE)
+  median(gpa_post, na.rm = TRUE) - median(gpa_covid, na.rm = TRUE)
+})
+ci_median_ug <- quantile(boot_medians_ug, c(0.025, 0.975))
+ci_median_real_ug <- ci_median_ug * mean_sd_ug
+cat("Undergrad GPA median difference CI (original scale):", ci_median_real_ug, "\n")
+
+# Postgrad
+boot_medians_pg <- replicate(n_boot, {
+  gpa_covid <- sample(df_gpa_pg$GPA[df_gpa_pg$COVID_period == "During COVID"], replace = TRUE)
+  gpa_post <- sample(df_gpa_pg$GPA[df_gpa_pg$COVID_period == "Post-COVID"], replace = TRUE)
+  median(gpa_post, na.rm = TRUE) - median(gpa_covid, na.rm = TRUE)
+})
+ci_median_pg <- quantile(boot_medians_pg, c(0.025, 0.975))
+ci_median_real_pg <- ci_median_pg * mean_sd_pg
+cat("Postgrad GPA median difference CI (original scale):", ci_median_real_pg, "\n")
+
+```
+
+
+Bootstrapping for individual papers
+
+```{r}
+bootstrap_paper_diff <- function(df, stats_lookup, n_boot = 10000, exclude_papers = NULL) {
+  if (!is.null(exclude_papers)) {
+    df <- df %>% filter(!Paper %in% exclude_papers)
+  }
+  papers <- unique(df$Paper)
+  
+  results <- lapply(papers, function(paper) {
+    df_paper <- df %>% filter(Paper == paper)
+    # Get paper-specific SD
+    paper_sd <- stats_lookup %>% filter(Paper == paper) %>% pull(sd_grade)
+    # Only proceed if BOTH groups have at least one non-NA
+    n_covid <- sum(!is.na(df_paper$Grade_z_paper[df_paper$COVID_period == "During COVID"]))
+    n_post <- sum(!is.na(df_paper$Grade_z_paper[df_paper$COVID_period == "Post-COVID"]))
+    if (n_covid > 0 & n_post > 0) {
+      boot_diffs <- replicate(n_boot, {
+        gpa_covid <- sample(df_paper$Grade_z_paper[df_paper$COVID_period == "During COVID"], replace = TRUE)
+        gpa_post <- sample(df_paper$Grade_z_paper[df_paper$COVID_period == "Post-COVID"], replace = TRUE)
+        mean(gpa_post, na.rm = TRUE) - mean(gpa_covid, na.rm = TRUE)
+      })
+      # Remove any NA in the bootstrapped differences (shouldn't happen, but just in case)
+      boot_diffs <- boot_diffs[!is.na(boot_diffs)]
+      ci <- quantile(boot_diffs, c(0.025, 0.975), na.rm = TRUE)
+      # Convert to real scale
+      ci_real <- ci * paper_sd
+      mean_diff_obs <- mean(
+        df_paper$Grade_z_paper[df_paper$COVID_period == "Post-COVID"], na.rm = TRUE
+      ) - mean(
+        df_paper$Grade_z_paper[df_paper$COVID_period == "During COVID"], na.rm = TRUE
+      )
+      mean_diff_real <- mean_diff_obs * paper_sd
+      tibble(
+        Paper = paper,
+        Mean_Diff_Std = mean_diff_obs,
+        `95% CI (Std)` = paste0("[", round(ci[1], 3), ", ", round(ci[2], 3), "]"),
+        Mean_Diff_Real = mean_diff_real,
+        `95% CI (Real)` = paste0("[", round(ci_real[1], 2), ", ", round(ci_real[2], 2), "]")
+      )
+    } else {
+      tibble(Paper = paper, Mean_Diff_Std = NA, `95% CI (Std)` = NA,
+             Mean_Diff_Real = NA, `95% CI (Real)` = NA)
+    }
+  })
+  
+  bind_rows(results)
+}
+
+
+```
+
+```{r}
+library(dplyr)
+library(readr)
+library(writexl)
+
+boot_results_ug <- bootstrap_paper_diff(df_long_ug, stats_lookup)
+boot_results_pg <- bootstrap_paper_diff(df_long_pg, stats_lookup, exclude_papers = "MEDSCI_760")
+
+# --- Add numeric CI columns and Significant flag ---
+extract_ci <- function(ci_col) {
+  lower <- as.numeric(str_extract(ci_col, "(?<=\\[)-?\\d+\\.?\\d*"))
+  upper <- as.numeric(str_extract(ci_col, "(?<=, )-?\\d+\\.?\\d*"))
+  tibble(CI_Lower = lower, CI_Upper = upper)
+}
+
+boot_results_ug <- boot_results_ug %>%
+  bind_cols(extract_ci(.$`95% CI (Real)`)) %>%
+  mutate(Significant = CI_Lower > 0 | CI_Upper < 0)
+
+boot_results_pg <- boot_results_pg %>%
+  bind_cols(extract_ci(.$`95% CI (Real)`)) %>%
+  mutate(Significant = CI_Lower > 0 | CI_Upper < 0)
+```
+
+Save to excel:
+```{r}
+# --- Save to Excel ---
+write_xlsx(list(
+  "Undergraduate" = boot_results_ug,
+  "Postgraduate" = boot_results_pg
+), "Bootstrap_GPA_Difference_Results.xlsx")
+
+# Save only significant results
+write_xlsx(list(
+  "Undergraduate_Significant" = filter(boot_results_ug, Significant),
+  "Postgraduate_Significant" = filter(boot_results_pg, Significant)
+), "Bootstrap_GPA_Difference_Significant_Only.xlsx")
+
+
+```
+
+
+
+# Beyasian Model for COVID
+Undergrad mean (Student t):
+```{r}
+library(brms)
+
+# Define priors
+priors <- c(
+  set_prior("normal(0, 1)", class = "b"),       # for fixed effects (intercept and COVID_period)
+  set_prior("student_t(3, 0, 1)", class = "sigma")  # for residual SD
+)
+
+# Fit model with priors sampled
+fit_ug_prior_t <- brm(
+  GPA ~ COVID_period,
+  data = df_gpa_ug,
+  family = student(),
+  prior = priors,
+  sample_prior = "yes",
+  iter = 4000,
+  warmup = 2000,
+  chains = 4,
+  cores = 4,
+  seed = 123
+)
+
+
+```
+
+Extract Results:
+```{r}
+summary(fit_ug_prior_t)
+posterior_samples(fit_ug_prior_t, pars = "b")  # effect of COVID_periodPost-COVID
+plot(fit_ug_prior_t)
+```
+
+
+Postgrad mean (student t):
+
+```{r}
+# Define priors
+priors <- c(
+  set_prior("normal(0, 1)", class = "b"),       # for fixed effects (intercept and COVID_period)
+  set_prior("student_t(3, 0, 1)", class = "sigma")  # for residual SD
+)
+
+# Fit model with priors sampled
+fit_pg_prior_t <- brm(
+  GPA ~ COVID_period,
+  data = df_gpa_pg,
+  family = student(),
+  prior = priors,
+  sample_prior = "yes",
+  iter = 4000,
+  warmup = 2000,
+  chains = 4,
+  cores = 4,
+  seed = 123
+)
+
+```
+
+
+Extract Results:
+```{r}
+summary(fit_pg_prior_t)
+posterior_samples(fit_pg_prior_t, pars = "b")  # effect of COVID_periodPost-COVID
+plot(fit_pg_prior_t)
+```
+
+Check Sample data skewness
+
+```{r}
+
+# Density plots for Mean Grades - All, Undergrad and Postgrad
+ggplot(df_gpa_combined, aes(x = GPA, fill = COVID_period)) + 
+ geom_density (alpha = 0.5) +
+ facet_wrap(~ GPA_type, scales = "free") +
+ labs(title = "Density of standardised Mean Grades: COVID vs Post-COVID", x = "Standardised Mean Grades by UG and PG", fill = "Period") + 
+ theme_classic()
+
+```
+
+
+```{r}
+library(brms)
+
+# Define priors
+priors <- c(
+  set_prior("normal(0, 1)", class = "b"),       # for fixed effects (intercept and COVID_period)
+  set_prior("student_t(3, 0, 1)", class = "sigma")  # for residual SD
+)
+
+# Fit model with priors sampled
+fit_ug_prior <- brm(
+  GPA ~ COVID_period,
+  data = df_gpa_ug,
+  family = gaussian(),
+  prior = priors,
+  sample_prior = "yes",
+  iter = 4000,
+  warmup = 2000,
+  chains = 4,
+  cores = 4,
+  seed = 123
+)
+
+
+```
+
+Extract Results:
+```{r}
+summary(fit_ug_prior)
+posterior_samples(fit_ug_prior, pars = "b")  # effect of COVID_periodPost-COVID
+plot(fit_ug_prior)
+```
+
+
+Postgrad mean (gaussian):
+
+```{r}
+# Define priors
+priors <- c(
+  set_prior("normal(0, 1)", class = "b"),       # for fixed effects (intercept and COVID_period)
+  set_prior("student_t(3, 0, 1)", class = "sigma")  # for residual SD
+)
+
+# Fit model with priors sampled
+fit_pg_prior <- brm(
+  GPA ~ COVID_period,
+  data = df_gpa_pg,
+  family = gaussian(),
+  prior = priors,
+  sample_prior = "yes",
+  iter = 4000,
+  warmup = 2000,
+  chains = 4,
+  cores = 4,
+  seed = 123
+)
+
+```
+
+
+Extract Results:
+```{r}
+summary(fit_pg_prior)
+posterior_samples(fit_pg_prior, pars = "b")  # effect of COVID_periodPost-COVID
+plot(fit_pg_prior)
+```
+
+
+
+
+
+Print results for Undergrad and Postgrad mean:
+```{r}
+# Extract posterior samples for the correct parameter
+post <- posterior_samples(fit_ug_prior, pars = "b_COVID_periodPostMCOVID")
+
+# Now calculate the mean and 95% CI
+mean_bayes <- mean(post[[1]])
+ci_bayes <- quantile(post[[1]], probs = c(0.025, 0.975))
+
+print(mean_bayes)
+print(ci_bayes)
+
+mean_real_bayes <- mean_bayes * mean_sd_ug
+ci_real_bayes <- ci_bayes * mean_sd_ug
+
+cat("Undergrad GPA Bayesian estimate (original scale):",
+    round(mean_real_bayes, 2),
+    "with 95% CI:",
+    round(ci_real_bayes[1], 2), "to", round(ci_real_bayes[2], 2), "\n")
+
+
+```
+
+Postgrad Beyasian CI (not significant):
+
+```{r}
+post_pg <- posterior_samples(fit_pg_prior, pars = "b_COVID_periodPostMCOVID")
+
+# Calculate the Mean and 95% Credible Interval
+mean_bayes_pg <- mean(post_pg[[1]])
+ci_bayes_pg <- quantile(post_pg[[1]], probs = c(0.025, 0.975))
+
+# Convert to Real GPA Scale Using Your Existing mean_sd_pg
+mean_real_bayes_pg <- mean_bayes_pg * mean_sd_pg
+ci_real_bayes_pg <- ci_bayes_pg * mean_sd_pg
+
+cat("Postgrad GPA Bayesian estimate (original scale):",
+    round(mean_real_bayes_pg, 2),
+    "with 95% CI:",
+    round(ci_real_bayes_pg[1], 2), "to", round(ci_real_bayes_pg[2], 2), "\n")
+
+```
+
+
+## Beyasian for all papers:
+
+```{r}
+library(brms)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+
+# Set up parallelisation for all 10 cores
+options(mc.cores = 10)
+
+# Get all unique papers
+all_papers <- unique(df_long$Paper)
+
+# Filter to undergrad or postgrad papers
+# For undergrad:
+# all_papers <- setdiff(all_papers, postgrad_papers)
+# For postgrad:
+# all_papers <- intersect(all_papers, postgrad_papers)
+
+# Compute mean and SD for each paper (for back-transforming)
+stats_lookup <- df_long %>%
+  group_by(Paper) %>%
+  summarise(
+    mean_grade = mean(Grade, na.rm = TRUE),
+    sd_grade = sd(Grade, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Define priors
+priors <- c(
+  set_prior("normal(0, 1)", class = "b"),
+  set_prior("student_t(3, 0, 1)", class = "sigma")
+)
+
+fit_paper_bayes <- function(paper_id) {
+  df_paper <- df_long %>%
+    filter(Paper == paper_id & !is.na(Grade_z_paper) & !is.na(COVID_period))
+  # Skip only if one COVID group present
+  if(length(unique(df_paper$COVID_period)) < 2) return(NULL)
+  fit <- brm(
+    Grade_z_paper ~ COVID_period,
+    data = df_paper,
+    family = student(), # Robust likelihood to fit the skewed data
+    prior = priors,
+    sample_prior = "yes",
+    iter = 1000, # Save running time
+    warmup = 500, # Save running time
+    chains = 2, # Save running time
+    cores = 10,
+    seed = 123,
+    silent = TRUE
+  )
+  # Find parameter name for COVID effect
+  coef_names <- colnames(posterior_samples(fit))
+  covid_param <- coef_names[grepl("COVID_period", coef_names) & grepl("Post", coef_names)]
+  if(length(covid_param) == 0) return(NULL)
+  # Extract prior and posterior
+  post <- as.numeric(posterior_samples(fit, pars = covid_param)[[1]])
+  prior <- as.numeric(prior_samples(fit, pars = covid_param)[[1]])
+  mean_bayes <- mean(post)
+  ci_bayes <- quantile(post, probs = c(0.025, 0.975))
+  # Back-transform to original grade units
+  sd_grade <- stats_lookup$sd_grade[stats_lookup$Paper == paper_id]
+  mean_real_bayes <- mean_bayes * sd_grade
+  ci_real_bayes <- ci_bayes * sd_grade
+  tibble(
+    Paper = paper_id,
+    N = nrow(df_paper),
+    COVID_effect_z = mean_bayes,
+    COVID_2.5 = ci_bayes[1],
+    COVID_97.5 = ci_bayes[2],
+    SD_grade = sd_grade,
+    COVID_effect_grade = mean_real_bayes,
+    COVID_grade_2.5 = ci_real_bayes[1],
+    COVID_grade_97.5 = ci_real_bayes[2],
+    Prior_samples = list(prior),
+    Posterior_samples = list(post)
+  )
+}
+
+# Fit all papers (this can take a while)
+results_bayes <- map_dfr(all_papers, fit_paper_bayes)
+
+```
+
+View the results
+```{r}
+print(results_bayes)
+
+```
+
+Add flags and significances and save the results
+```{r}
+library(dplyr)
+library(writexl)
+
+# Add flags and significance column
+results_bayes_flagged <- results_bayes %>%
+  mutate(
+    Significant = ifelse(COVID_2.5 > 0 | COVID_97.5 < 0, "Yes", "No"), # 95% CI excludes zero
+    Low_N = ifelse(N < 30, "Yes", "No")
+  )
+
+# Filter for significant results only
+results_bayes_sig <- results_bayes_flagged %>%
+  filter(Significant == "Yes")
+
+# Save all results (with flags)
+write_xlsx(results_bayes_flagged, "Bayesian_COVID_Effect_by_Paper_All.xlsx")
+
+# Save significant results only
+write_xlsx(results_bayes_sig, "Bayesian_COVID_Effect_by_Paper_Significant.xlsx")
+
+
+```
+
+MEDSCI 300 - not significant.
+
+Reason:
+With only 4 students in the Post-COVID group, the Bayesian model (with priors) “shrinks” the effect toward zero and gives a wider interval to reflect the higher uncertainty. Bayesian credible intervals tend to be more conservative with small samples, especially if the prior is weakly informative or regularising.
+
+```{r}
+library(brms)
+
+# Filter for MEDSCI_300 and remove missing values
+df_300 <- df_long %>%
+  filter(Paper == "MEDSCI_300", !is.na(Grade_z_paper), !is.na(COVID_period))
+
+# Quick check: see how many students in each COVID period
+table(df_300$COVID_period)
+
+# Fit Bayesian model (adjust iter/warmup as desired for speed)
+fit_300 <- brm(
+  Grade_z_paper ~ COVID_period,
+  data = df_300,
+  family = gaussian(),
+  prior = priors,    # reuse your priors from earlier
+  iter = 4000,       # or lower for speed, e.g. iter = 2000
+  warmup = 1000,
+  chains = 2,
+  cores = 2,
+  seed = 123
+)
+
+```
+
+
+```{r}
+
+summary(fit_300)
+
+# Find the COVID effect parameter
+covid_param <- grep("COVID_period.*Post", colnames(posterior_samples(fit_300)), value = TRUE)
+post <- posterior_samples(fit_300, pars = covid_param)
+mean_bayes_300 <- mean(post[[1]])
+ci_bayes_300 <- quantile(post[[1]], c(0.025, 0.975))
+
+# Back-transform to original grade units using SD for MEDSCI_300
+sd_300 <- df_long %>%
+  filter(Paper == "MEDSCI_300") %>%
+  summarise(sd_grade = sd(Grade, na.rm = TRUE)) %>%
+  pull(sd_grade)
+
+mean_real_bayes_300 <- mean_bayes_300 * sd_300
+ci_real_bayes_300 <- ci_bayes_300 * sd_300
+
+cat("MEDSCI 300 Bayesian COVID effect (grade units):",
+    round(mean_real_bayes_300, 2),
+    "with 95% CI:",
+    round(ci_real_bayes_300[1], 2), "to", round(ci_real_bayes_300[2], 2), "\n")
+
+
+```
+
+
+Visualisation Beyasian Prior and Posterior Distribution:
+
+```{r}
+prior_vs_posterior_df <- results_bayes
+
+library(tidyr)
+library(dplyr)
+
+prior_vs_posterior_long <- prior_vs_posterior_df %>%
+  select(Paper, Prior_samples, Posterior_samples) %>%
+  pivot_longer(cols = c("Prior_samples", "Posterior_samples"), 
+               names_to = "Type", values_to = "Samples") %>%
+  unnest(cols = Samples)
+
+
+library(ggplot2)
+
+ggplot(prior_vs_posterior_long, aes(x = Samples, color = Type, fill = Type)) +
+  geom_density(alpha = 0.3, adjust = 1.5) +
+  facet_wrap(~ Paper, scales = "free") +
+  labs(
+    title = "Prior vs Posterior Distributions: COVID Effect",
+    x = "Effect Size (SD units)",
+    y = "Density"
+  ) +
+  scale_color_manual(values = c("Prior_samples" = "grey50", "Posterior_samples" = "#0072B2")) +
+  scale_fill_manual(values = c("Prior_samples" = "grey80", "Posterior_samples" = "#56B4E9")) +
+  theme_minimal(base_size = 12)
+
+
+```
+
+
+Bayesian Model with Student-t Likelihood - MEDSCI 311.
+
+For MEDSCI 311, the bootstrap method suggests a significant COVID effect, but the Bayesian model—using a normal error structure—does not. Given that the grade distribution for this paper is highly skewed, the Bayesian approach is more conservative and likely more reliable, as it better accounts for uncertainty in the presence of skewness. For even more robust inference, a Bayesian model with a skew-normal or t-distribution likelihood could be considered.
+```{r}
+fit_311_t <- brm(
+  Grade_z_paper ~ COVID_period,
+  data = df_long %>% filter(Paper == "MEDSCI_311", !is.na(Grade_z_paper), !is.na(COVID_period)),
+  family = student(),  # Use robust Student-t likelihood
+  prior = priors,
+  iter = 2000, warmup = 1000, chains = 2, cores = 4,
+  sample_prior = "yes",
+  seed = 123
+)
+
+```
+
+```{r}
+summary(fit_311_t)
+```
+
+
+### Standardize grades for each paper within each year
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Identify all paper columns
+paper_cols <- grep("^(MEDSCI_|PHARMCOL_|PHYSIOL_)", names(df_anon), value = TRUE)
+
+# Pivot to long format
+df_long <- df_anon %>%
+  pivot_longer(cols = all_of(paper_cols), names_to = "Paper", values_to = "Grade") %>%
+  filter(!is.na(Grade))
+
+```
+
+Standardize by Year and Paper:
+
+```{r}
+# Standardize grades for each paper and year combination
+df_long <- df_long %>%
+  group_by(Year, Paper) %>%
+  mutate(Grade_z = (Grade - mean(Grade, na.rm = TRUE)) / sd(Grade, na.rm = TRUE)) %>%
+  ungroup()
+
+```
+
+In case students retook papers, keep Only the Latest Attempt per Paper per Student:
+
+```{r}
+# If a student has multiple attempts, keep the latest year
+df_long_latest <- df_long %>%
+  group_by(Student, Paper) %>%
+  filter(Year == max(Year)) %>%
+  slice_tail(n = 1) %>%
+  ungroup()
+
+```
+
+Pivot back to wide format:
+```{r}
+# One row per student, one column per paper
+df_wide <- df_long_latest %>%
+  select(Student, Paper, Grade_z) %>%
+  pivot_wider(names_from = Paper, values_from = Grade_z)
+
+# Keep only undergrad papers:
+df_ug <- df_wide %>%
+  select(-MEDSCI_700, -MEDSCI_703, -MEDSCI_704, -MEDSCI_705, -MEDSCI_706, 
+         -MEDSCI_707, -MEDSCI_708, -MEDSCI_709, -MEDSCI_710, -MEDSCI_712, 
+         -MEDSCI_713, -MEDSCI_714, -MEDSCI_715, -MEDSCI_716, -MEDSCI_717, 
+         -MEDSCI_718, -MEDSCI_719, -MEDSCI_720, -MEDSCI_721, -MEDSCI_722, 
+         -MEDSCI_723, -MEDSCI_727, -MEDSCI_729, -MEDSCI_730, -MEDSCI_731, 
+         -MEDSCI_732, -MEDSCI_734, -MEDSCI_735, -MEDSCI_737, -MEDSCI_738, 
+         -MEDSCI_739, -MEDSCI_741, -MEDSCI_742, -MEDSCI_743, -MEDSCI_744, 
+         -MEDSCI_745, -MEDSCI_760)
+
+#names(df_ug)
+
+```
+
+Add cluster assignment:
+
+```{r}
+df_ug <- df_ug %>%
+  left_join(df_binary %>% select(Student, Cluster), by = "Student")
+
+
+# Create dataframes for cluster 5, 6, and 7
+df_cluster5 <- df_ug %>% filter(Cluster == 5)
+df_cluster6 <- df_ug %>% filter(Cluster == 6)
+df_cluster7 <- df_ug %>% filter(Cluster == 7)
+
+#names(df_cluster5)
+#names(df_cluster6)
+#names(df_cluster7)
+#dim(df_cluster5)
+#dim(df_cluster6)
+#dim(df_cluster7)
+```
+
+
+
+## Task I - Correlation/Prediction: Stage III vs. Stage II + MEDSCI 142 - which one is a stronger predictor
+
+Using Hierarchical regression to compare predictive strength step by step
+Bayesian $R^2$ gives a transparent, uncertainty-aware summary of model fit, matching your Bayesian regression framework.
+
+```{r}
+library(brms)
+library(dplyr)
+
+# Filter students who have Stage III grades (Clusters 5, 6, 7)
+df_stageIII <- df_ug %>% filter(Cluster %in% c(5,6,7))
+
+stage2_papers <- grep("^MEDSCI_2\\d{2}$", names(df_stageIII), value = TRUE) # matches MEDSCI_2xx
+stage2_papers <- setdiff(stage2_papers, "MEDSCI_142") # exclude 142
+
+stage3_papers <- c(grep("^MEDSCI_3\\d{2}$", names(df_stageIII), value = TRUE),
+                   grep("^PHYSIOL_399$", names(df_stageIII), value = TRUE),
+                   grep("^PHARMCOL_399$", names(df_stageIII), value = TRUE))
+
+# Calculate means
+df_stageIII <- df_stageIII %>%
+  rowwise() %>%
+  mutate(StageII_mean = mean(c_across(all_of(stage2_papers)), na.rm = TRUE),
+         StageIII_mean = mean(c_across(all_of(stage3_papers)), na.rm = TRUE)) %>%
+  ungroup()
+```
+
+
+Classic Hierarchical analysis:
+
+```{r}
+# Ensure Cluster is a factor (categorical)
+df_stageIII$Cluster <- as.factor(df_stageIII$Cluster)
+
+# Model 1: StageIII_mean ~ MEDSCI_142
+model_142_classic <- lm(StageIII_mean ~ MEDSCI_142, data = df_stageIII)
+
+# Model 2: StageIII_mean ~ StageII_mean
+model_stageII_classic <- lm(StageIII_mean ~ StageII_mean, data = df_stageIII)
+
+# Model 3: StageIII_mean ~ MEDSCI_142 + StageII_mean
+model_combined_classic <- lm(StageIII_mean ~ MEDSCI_142 + StageII_mean, data = df_stageIII)
+
+# Model 4: Additive model with Cluster
+model_cluster <- lm(StageIII_mean ~ MEDSCI_142 + StageII_mean + Cluster, data = df_stageIII)
+
+# Model 5: Interaction model with Cluster
+model_interaction <- lm(StageIII_mean ~ (MEDSCI_142 + StageII_mean) * Cluster, data = df_stageIII)
+
+# Combine R² and Adjusted R² into a summary table
+r2_table <- data.frame(
+  Model = c(
+    "MEDSCI_142",
+    "StageII_mean",
+    "Combined",
+    "Combined + Cluster",
+    "Interaction"
+  ),
+  R2 = c(
+    summary(model_142_classic)$r.squared,
+    summary(model_stageII_classic)$r.squared,
+    summary(model_combined_classic)$r.squared,
+    summary(model_cluster)$r.squared,
+    summary(model_interaction)$r.squared
+  ),
+  Adj_R2 = c(
+    summary(model_142_classic)$adj.r.squared,
+    summary(model_stageII_classic)$adj.r.squared,
+    summary(model_combined_classic)$adj.r.squared,
+    summary(model_cluster)$adj.r.squared,
+    summary(model_interaction)$adj.r.squared
+  )
+)
+
+# Print the summary table
+print(r2_table)
+
+```
+
+Interaction model:
+```{r}
+df_stageIII$Cluster <- factor(df_stageIII$Cluster)
+df_stageIII$Cluster <- relevel(df_stageIII$Cluster, ref = "6")
+# Regression Model
+model_interaction <- lm(
+  StageIII_mean ~ (MEDSCI_142 + StageII_mean) * Cluster,
+  data = df_stageIII
+)
+summary(model_interaction)
+
+```
+
+
+
+
+Individual Stage III Papers in each cluster -
+
+Linear regression and write in excel (commented)
+
+```{r}
+library(broom)
+library(dplyr)
+
+# Define predictors and targets
+predictors_list <- list(
+  "5" = c("MEDSCI_142", "MEDSCI_205", "MEDSCI_206"),
+  "6" = c("MEDSCI_142", "MEDSCI_203", "MEDSCI_204", "MEDSCI_205"),
+  "7" = c("MEDSCI_142", "MEDSCI_201", "MEDSCI_204", "MEDSCI_205", "MEDSCI_206")
+)
+stage3_list <- list(
+  "5" = c("MEDSCI_311", "MEDSCI_316", "MEDSCI_317", "PHYSIOL_399"),
+  "6" = c("PHARMCOL_399", "MEDSCI_318", "MEDSCI_319", "MEDSCI_320"),
+  "7" = c("MEDSCI_316", "MEDSCI_317", "MEDSCI_320")
+)
+df_list <- list("5" = df_cluster5, "6" = df_cluster6, "7" = df_cluster7)
+
+results_all <- list()
+
+for (clust in c("5", "6", "7")) {
+  df_sub <- df_list[[clust]]
+  predictors <- predictors_list[[clust]]
+  stage3_papers <- stage3_list[[clust]]
+  
+  res_list <- list()
+  for (target in stage3_papers) {
+    predictors_formula <- paste(predictors, collapse = " + ")
+    fml <- as.formula(paste(target, "~", predictors_formula))
+    model <- lm(fml, data = df_sub)
+    tidy_mod <- tidy(model)
+    tidy_mod$Stage3_Paper <- target
+    res_list[[target]] <- tidy_mod
+  }
+  results_all[[paste0("Cluster", clust)]] <- bind_rows(res_list)
+}
+
+
+# Extract and summarise as before
+extract_coef_p <- function(df, predictors) {
+  df %>%
+    filter(term %in% predictors) %>%
+    select(Stage3_Paper, term, estimate, p.value)
+}
+
+summary_table <- bind_rows(
+  extract_coef_p(results_all$Cluster5, predictors_list[["5"]]) %>% mutate(Cluster = 5),
+  extract_coef_p(results_all$Cluster6, predictors_list[["6"]]) %>% mutate(Cluster = 6),
+  extract_coef_p(results_all$Cluster7, predictors_list[["7"]]) %>% mutate(Cluster = 7)
+)
+
+
+library(writexl)   # or writexl
+
+# Add "star" for significant p-values, and keep estimate to 3 decimals
+library(dplyr)
+library(writexl)
+
+# Assume summary_table has columns: Cluster, Stage3_Paper, term, estimate, p.value
+
+summary_table_export <- summary_table %>%
+  mutate(
+    Estimate = round(estimate, 3),
+    `P-value` = case_when(
+      p.value < 0.001 ~ "<0.001",
+      p.value < 0.05  ~ paste0(round(p.value, 3), " *"),
+      TRUE            ~ as.character(round(p.value, 3))
+    )
+  ) %>%
+  select(Cluster, Stage3_Paper, term, Estimate, `P-value`)
+
+#write_xlsx(summary_table_export, "cluster_regression_results.xlsx")
+
+
+
+```
+
+
+```{r}
+# Format and highlight
+summary_table <- summary_table %>%
+  mutate(
+    # Format estimates, negative in red
+    estimate_fmt = ifelse(estimate < 0,
+                          sprintf('<span style="color:red;">%.3f</span>', estimate),
+                          sprintf('%.3f', estimate)),
+    # Format p-values, significant (<0.05) in red
+    p.value_fmt = case_when(
+      p.value < 0.001 ~ '<span style="color:red;">&lt;0.001</span>',
+      p.value < 0.05  ~ sprintf('<span style="color:red;">%.3f</span>', p.value),
+      TRUE            ~ sprintf('%.3f', p.value)
+    )
+  ) %>%
+  select(Cluster, Stage3_Paper, term, estimate_fmt, p.value_fmt)
+
+# Print as HTML table for correct highlighting (works in RMarkdown/Quarto)
+knitr::kable(summary_table, escape = FALSE, caption = "Regression Results by Cluster")
+
+
+```
+
+
+### Bayesian checks
+
+Skewness checks for Stage III average - not skewed
+
+```{r}
+library(bayesplot)
+pp_check(model_combined) + ggtitle("Posterior Predictive Check for StageIII_mean")
+
+# Or use residuals
+resid_df <- resid(model_combined_classic)
+hist(resid_df, breaks=30, main="Residuals Histogram", xlab="Residuals")
+
+```
+
+Skewness for individual papers:
+
+```{r}
+library(broom)
+library(dplyr)
+library(ggplot2)
+library(moments)
+
+# Define predictor and target lists
+predictors_list <- list(
+  "5" = c("MEDSCI_142", "MEDSCI_205", "MEDSCI_206"),
+  "6" = c("MEDSCI_142", "MEDSCI_203", "MEDSCI_204", "MEDSCI_205"),
+  "7" = c("MEDSCI_142", "MEDSCI_201", "MEDSCI_204", "MEDSCI_205", "MEDSCI_206")
+)
+stage3_list <- list(
+  "5" = c("MEDSCI_311", "MEDSCI_316", "MEDSCI_317", "PHYSIOL_399"),
+  "6" = c("PHARMCOL_399", "MEDSCI_318", "MEDSCI_319", "MEDSCI_320"),
+  "7" = c("MEDSCI_316", "MEDSCI_317", "MEDSCI_320")
+)
+df_list <- list("5" = df_cluster5, "6" = df_cluster6, "7" = df_cluster7)
+
+# Summary table and storage for skewed data
+sample_size_summary <- data.frame()
+skewed_papers <- list()
+
+for (clust in c("5", "6", "7")) {
+  df_sub <- df_list[[clust]]
+  stage3_papers <- stage3_list[[clust]]
+  
+  for (target in stage3_papers) {
+    model_data <- df_sub[, target, drop = FALSE] %>% na.omit()
+    N <- nrow(model_data)
+    if (N < 5) next  # Skip small samples
+    
+    skew_val <- round(skewness(model_data[[target]]), 3)
+    
+    # Save to summary table
+    sample_size_summary <- rbind(sample_size_summary, data.frame(
+      Cluster = clust,
+      Stage3_Paper = target,
+      N = N,
+      Skewness_Grade = skew_val
+    ))
+    
+    # Store data for skewed plots
+    if (abs(skew_val) >= 0.8) {
+      skewed_papers[[paste0(clust, "_", target)]] <- data.frame(
+        Grade = model_data[[target]],
+        Paper = target,
+        Cluster = clust
+      )
+    }
+  }
+}
+
+# Combine and plot
+library(ggplot2)
+df_skewed <- bind_rows(skewed_papers)
+
+ggplot(df_skewed, aes(x = Grade, fill = Paper)) +
+  geom_density(alpha = 0.6) +
+  facet_wrap(~ paste0("Cluster ", Cluster, ": ", Paper), scales = "free") +
+  theme_minimal() +
+  labs(title = "Density Plot of Skewed Stage III Papers",
+       x = "Standardised Grade", y = "Density")
+
+print(sample_size_summary)
+```
+
+
+Switch to a skew-normal likelihood model:
+
+```{r}
+# Prepare model data for Cluster 5, MEDSCI_317
+predictors_317 <- c("MEDSCI_142", "MEDSCI_205", "MEDSCI_206")
+target_317 <- "MEDSCI_317"
+
+df_model_317 <- df_cluster5 %>%
+  select(all_of(c(target_317, predictors_317))) %>%
+  na.omit()
+
+# Skewness check
+skew_val_317 <- skewness(residuals(lm(MEDSCI_317 ~ MEDSCI_142 + MEDSCI_205 + MEDSCI_206, data = df_model_317)))
+print(paste("Observed skewness (MEDSCI_317):", round(skew_val_317, 3)))  # Should be ~ -1.610
+
+# Set priors for skewness
+priors_317 <- c(
+  prior(normal(0, 5), class = "Intercept"),
+  prior(normal(0, 5), class = "b"),
+  prior(normal(0, 2), class = "sigma"),
+  prior(normal(-1.5, 0.5), class = "alpha")  # Based on skewness
+)
+
+# Fit Bayesian skew-normal regression
+model_skew317 <- brm(
+  formula = MEDSCI_317 ~ MEDSCI_142 + MEDSCI_205 + MEDSCI_206,
+  data = df_model_317,
+  family = skew_normal(),
+  prior = priors_317,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 1000,
+  seed = 123,
+  control = list(adapt_delta = 0.95)
+)
+
+
+```
+
+Summary and Visualisation of Skew-normal model for MEDSC 317:
+```{r}
+summary(model_skew317)
+plot(model_skew317)
+
+```
+
+
+```{r}
+# Prepare model data for Cluster 5, PHYSIOL_399
+predictors_399 <- c("MEDSCI_142", "MEDSCI_205", "MEDSCI_206")
+target_399 <- "PHYSIOL_399"
+
+df_model_399 <- df_cluster5 %>%
+  select(all_of(c(target_399, predictors_399))) %>%
+  na.omit()
+
+# Skewness check
+skew_val_399 <- skewness(residuals(lm(PHARMCOL_399 ~ MEDSCI_142 + MEDSCI_205 + MEDSCI_206, data = df_model_399)))
+print(paste("Observed skewness (PHYSIOL_399):", round(skew_val_399, 3)))  
+
+# Set priors for skewness
+priors_399 <- c(
+  prior(normal(0, 5), class = "Intercept"),
+  prior(normal(0, 5), class = "b"),
+  prior(normal(0, 2), class = "sigma"),
+  prior(normal(-2.3, 0.5), class = "alpha")
+)
+
+# Fit Bayesian skew-normal regression
+model_skew399 <- brm(
+  formula = PHYSIOL_399 ~ MEDSCI_142 + MEDSCI_205 + MEDSCI_206,
+  data = df_model_399,
+  family = skew_normal(),
+  prior = priors_399,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 1000,
+  seed = 123,
+  control = list(adapt_delta = 0.95)
+)
+
+
+```
+
+Summary and plot for PHYSIOL 399:
+
+```{r}
+summary(model_skew399)
+plot(model_skew399)
+```
+
+
+Compare Residuals from lm vs brm
+
+```{r}
+
+# Classical model
+model_lm <- lm(MEDSCI_317 ~ MEDSCI_142 + MEDSCI_205 + MEDSCI_206, data = df_model_317)
+res_lm <- residuals(model_lm)
+
+# Extract residuals from posterior predictive draws (fitted - actual)
+posterior_samples <- posterior_predict(model_skew317, summary = FALSE)
+posterior_means <- colMeans(posterior_samples)
+res_brms_skew <- posterior_means - df_model_317$MEDSCI_317
+
+# Combine into one data frame
+res_df <- data.frame(
+  Residual = c(res_lm, res_brms_skew),
+  Model = rep(c("lm", "brms_skew"), each = length(res_lm))
+)
+
+# Plot histogram
+library(ggplot2)
+ggplot(res_df, aes(x = Residual, fill = Model)) +
+  geom_histogram(alpha = 0.5, position = "identity", bins = 30) +
+  facet_wrap(~Model, scales = "free") +
+  theme_minimal() +
+  ggtitle("Residual Distributions: lm vs brms (skew-normal)")
+
+```
+
+Compare models - Lower AIC or higher elpd_loo = better model.
+
+How confident can we be?
+Rule of thumb: if the absolute elpd_diff is more than 2 × se_diff, it’s a clear win.
+
+```{r}
+
+# Fit the Bayesian Gaussian model
+
+priors_gaussian <- c(
+  prior(normal(0, 5), class = "Intercept"),
+  prior(normal(0, 5), class = "b"),
+  prior(normal(0, 2), class = "sigma")
+)
+
+model_gaussian <- brm(
+  formula = MEDSCI_317 ~ MEDSCI_142 + MEDSCI_205 + MEDSCI_206,
+  data = df_model_317,
+  family = gaussian(),
+  prior = priors_gaussian,  # intercept, b, sigma
+  chains = 4, iter = 4000, warmup = 1000, seed = 123
+)
+
+# Compare using Leave-One-Out cross-validation
+library(loo)
+loo_skew <- loo(model_skew317)
+loo_gaussian <- loo(model_gaussian)
+
+# Compare
+loo_compare(loo_skew, loo_gaussian)
+
+# AIC for lm and brms (brms AIC = -2 * elpd_loo)
+AIC(model_lm)
+-2 * loo_gaussian$estimates["elpd_loo", "Estimate"]
+-2 * loo_skew$estimates["elpd_loo", "Estimate"]
+
+```
+
+PHYSIOL 399
+```{r}
+
+model_lm_399 <- lm(PHYSIOL_399 ~ MEDSCI_142 + MEDSCI_205 + MEDSCI_206, data = df_model_399)
+
+# Fit the Bayesian Gaussian model
+
+priors_gaussian_399 <- c(
+  prior(normal(0, 5), class = "Intercept"),
+  prior(normal(0, 5), class = "b"),
+  prior(normal(0, 2), class = "sigma")
+)
+
+model_gaussian_399 <- brm(
+  formula = PHYSIOL_399 ~ MEDSCI_142 + MEDSCI_205 + MEDSCI_206,
+  data = df_model_399,
+  family = gaussian(),
+  prior = priors_gaussian_399,  # intercept, b, sigma
+  chains = 4, iter = 4000, warmup = 1000, seed = 123
+)
+
+# Compare using Leave-One-Out cross-validation
+library(loo)
+loo_skew_399 <- loo(model_skew399)
+loo_gaussian_399 <- loo(model_gaussian_399)
+
+# Compare
+loo_compare(loo_skew_399, loo_gaussian_399)
+
+# AIC for lm and brms (brms AIC = -2 * elpd_loo)
+AIC(model_lm_399)
+-2 * loo_gaussian_399$estimates["elpd_loo", "Estimate"]
+-2 * loo_skew_399$estimates["elpd_loo", "Estimate"]
+
+```
+
+## Overperformance
+Identify if Stage II overperformance (relative to MEDSCI 142) persists into Stage III.
+
+Definition (Overperformers): Low MEDSCI 142 grade (below median or bottom quartile), high Stage II grades (above median).
+
+```{r}
+# Determine thresholds
+median_142 <- median(df_stageIII$MEDSCI_142, na.rm=TRUE)
+median_stageII <- median(df_stageIII$StageII_mean, na.rm=TRUE)
+
+df_stageIII <- df_stageIII %>%
+  mutate(Overperformer = (MEDSCI_142 < median_142 & StageII_mean > median_stageII))
+
+# Regressional Model checking persistence into Stage III
+overperf <- lm(StageIII_mean ~ Overperformer, data=df_stageIII)
+summary(overperf)
+
+overperf_inter <- lm(StageIII_mean ~ Overperformer * as.factor(Cluster), data = df_stageIII)
+summary(overperf_inter)
+
+```
+
