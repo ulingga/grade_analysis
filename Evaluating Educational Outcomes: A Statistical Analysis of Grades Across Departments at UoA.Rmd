@@ -2542,7 +2542,7 @@ df_cluster7 <- df_ug %>% filter(Cluster == 7)
 
 
 
-## Task I - Correlation/Prediction: Stage III vs. Stage II + MEDSCI 142 - which one is a stronger predictor
+## Task - Correlation/Prediction: Stage III vs. Stage II + MEDSCI 142 - which one is a stronger predictor
 
 Using Hierarchical regression to compare predictive strength step by step
 Bayesian $R^2$ gives a transparent, uncertainty-aware summary of model fit, matching your Bayesian regression framework.
