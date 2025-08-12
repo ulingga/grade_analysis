@@ -668,7 +668,7 @@ fviz_cluster(list(data = distance_matrix, cluster = df_binary$Cluster),
 3D plot:
 
 ```{r}
-# Assume you want to use only the paper columns for PCA
+# Use only the paper columns for PCA
 paper_cols <- grep("^MEDSCI_|^PHYSIOL_|^PHARMCOL_", names(df_binary), value = TRUE)
 pca_res <- prcomp(df_binary[, paper_cols], center = TRUE, scale. = TRUE)
 # Add the first 3 PCs and Cluster info to a plotting dataframe
@@ -1048,14 +1048,6 @@ ggplot(df_long7_2, aes(x = Grade, fill = StageII_Paper)) +
   theme_minimal()
 
 ```
-
-
-
-
-
-
-
-
 
 
 Levene’s Test applied to test homogeneity of variance
@@ -1734,20 +1726,6 @@ abline(v = ci, col = "blue", lty = 2)
 
 ```
 
-p-value = 0.5 for two-tail test and here's the reason:
-The p-value you computed is a two-sided “as or more extreme” test:
-Prop boot_diffs > 0: 0
-None of your bootstrap mean differences are positive; all are negative!
-Prop boot_diffs < 0: 1
-All bootstrapped mean differences are negative.
-Observed mean diff: –0.08
-(Post-COVID mean GPA is lower than During COVID, by 0.08 SDs)
-Prop boot_diffs >= mean_diff_obs: ~0.50
-(About half your bootstrapped mean differences are more negative than –0.08, about half are less negative)
-Prop abs(boot_diffs) >= abs(mean_diff_obs): ~0.50
-(About half your bootstrapped samples are as extreme (in magnitude) as your observed mean difference.)
-
-In this unusual scenario (all bootstraps negative), the observed mean difference is typical of your bootstrap distribution, not at an extreme tail—so the p-value is about 0.5.
 ```{r}
 cat("Prop boot_diffs > 0:", mean(boot_diffs > 0), "\n")
 cat("Prop boot_diffs < 0:", mean(boot_diffs < 0), "\n")
@@ -2216,7 +2194,7 @@ post_pg <- posterior_samples(fit_pg_prior, pars = "b_COVID_periodPostMCOVID")
 mean_bayes_pg <- mean(post_pg[[1]])
 ci_bayes_pg <- quantile(post_pg[[1]], probs = c(0.025, 0.975))
 
-# Convert to Real GPA Scale Using Your Existing mean_sd_pg
+# Convert to Real GPA Scale Using Existing mean_sd_pg
 mean_real_bayes_pg <- mean_bayes_pg * mean_sd_pg
 ci_real_bayes_pg <- ci_bayes_pg * mean_sd_pg
 
@@ -2366,7 +2344,7 @@ fit_300 <- brm(
   Grade_z_paper ~ COVID_period,
   data = df_300,
   family = gaussian(),
-  prior = priors,    # reuse your priors from earlier
+  prior = priors,    # reuse priors from earlier
   iter = 4000,       # or lower for speed, e.g. iter = 2000
   warmup = 1000,
   chains = 2,
@@ -2545,7 +2523,7 @@ df_cluster7 <- df_ug %>% filter(Cluster == 7)
 ## Task - Correlation/Prediction: Stage III vs. Stage II + MEDSCI 142 - which one is a stronger predictor
 
 Using Hierarchical regression to compare predictive strength step by step
-Bayesian $R^2$ gives a transparent, uncertainty-aware summary of model fit, matching your Bayesian regression framework.
+Bayesian $R^2$ gives a transparent, uncertainty-aware summary of model fit, matching the Bayesian regression framework.
 
 ```{r}
 library(brms)
@@ -2697,8 +2675,6 @@ library(writexl)   # or writexl
 # Add "star" for significant p-values, and keep estimate to 3 decimals
 library(dplyr)
 library(writexl)
-
-# Assume summary_table has columns: Cluster, Stage3_Paper, term, estimate, p.value
 
 summary_table_export <- summary_table %>%
   mutate(
@@ -3045,3 +3021,177 @@ summary(overperf_inter)
 
 ```
 
+## Follow-up tasks (By Rachelle) - Explore which Stage II paper is the strongest predictor for MEDSCI 301 and 302.
+
+Bayesian Model Averaging: Note this model only check data points that are not NA for all predictors.
+
+```{r}
+# Using Bayesian Model Averaging - around 25 students are included in the model
+
+library(BAS)
+bas.fit_301 <- bas.lm(
+  MEDSCI_301 ~ MEDSCI_203 + MEDSCI_205 + MEDSCI_202 + MEDSCI_204,
+  data = df_ug,
+  modelprior = uniform(),       # This is the correct argument and function
+  method = "BAS"
+)
+
+bas.fit_302 <- bas.lm(
+  MEDSCI_302 ~ MEDSCI_203 + MEDSCI_205 + MEDSCI_202 + MEDSCI_204,
+  data = df_ug,
+  modelprior = uniform(),       # This is the correct argument and function
+  method = "BAS"
+)
+
+# Model fit Summary
+summary(bas.fit_301)
+
+summary(bas.fit_302)
+
+```
+Check for numbers of data points in each model
+```{r}
+# Get the formula used for bas.lm
+formula_301 <- MEDSCI_301 ~ MEDSCI_203 + MEDSCI_205 + MEDSCI_202 + MEDSCI_204
+formula_302 <- MEDSCI_302 ~ MEDSCI_203 + MEDSCI_205 + MEDSCI_202 + MEDSCI_204
+
+# Count the complete cases included in the model
+model_frame_301 <- model.frame(formula_301, data = df_ug)
+n_obs_301 <- nrow(na.omit(model_frame_301))
+cat("Number of complete cases for MEDSCI_301 model:", n_obs_301, "\n")
+
+model_frame_302 <- model.frame(formula_302, data = df_ug)
+n_obs_302 <- nrow(na.omit(model_frame_302))
+cat("Number of complete cases for MEDSCI_302 model:", n_obs_302, "\n")
+
+
+```
+
+Table for reporting:
+
+```{r}
+# Summarised results 
+results <- tibble::tribble(
+  ~Stage3,     ~Top_Stage2,   ~Posterior_Inclusion_Probability,   ~Top_Model_R2, ~Top_Model_Posterior_Probability,
+  "MEDSCI 301", "MEDSCI 203", 0.87,    0.62,          0.25,
+  "MEDSCI 301", "MEDSCI 205", 0.40,    0.67,          0.18,
+  "MEDSCI 302", "MEDSCI 205", 0.98,    0.81,          0.27,
+  "MEDSCI 302", "MEDSCI 204", 0.99,    0.82,          0.09
+)
+
+print(results)
+
+
+```
+
+Regularised Regression (LASSO, Ridge, Elastic Net)
+```{r}
+library(glmnet)
+# Combine predictors and response into a single dataframe
+df_lasso <- df_ug[, c("MEDSCI_301", "MEDSCI_203", "MEDSCI_205", "MEDSCI_202", "MEDSCI_204")]
+
+# Keep only complete cases (no NA in any relevant column)
+df_lasso_complete <- na.omit(df_lasso)
+
+# Prepare x and y
+x <- as.matrix(df_lasso_complete[, c("MEDSCI_203", "MEDSCI_205", "MEDSCI_202", "MEDSCI_204")])
+y <- df_lasso_complete$MEDSCI_301
+
+# Fit LASSO
+library(glmnet)
+lasso_fit <- glmnet(x, y, alpha = 1)
+
+summary(lasso_fit)
+```
+
+
+```{r}
+set.seed(123)
+cv_fit <- cv.glmnet(x, y, alpha = 1)
+plot(cv_fit)
+coef(cv_fit, s = "lambda.min")
+
+```
+
+Multiple imputation with mice + BMA handling missing data:
+
+```{r}
+
+# Check skewness for MEDSCI 301
+library(moments)
+skew_val <- skewness(df_ug$MEDSCI_301, na.rm = TRUE)
+print(skew_val)
+
+# Set up prior for skew-normal likelihood
+priors <- c(
+  prior(normal(0, 5), class = "Intercept"),
+  prior(normal(0, 5), class = "b"),
+  prior(normal(0, 2), class = "sigma"),
+  prior(normal(-1.5, 0.5), class = "alpha")
+)
+
+
+```
+
+```{r}
+
+Sys.setenv(SDKROOT = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk")
+
+# Specify which predictors can have missing data and use the mi() function
+library(brms)
+
+fit_brms_301 <- brm(
+  bf(MEDSCI_301 ~ mi(MEDSCI_203) + mi(MEDSCI_205) + mi(MEDSCI_202) + mi(MEDSCI_204)) +
+    bf(MEDSCI_203 | mi() ~ 1) + # ~ 1 uses the mean
+    bf(MEDSCI_205 | mi() ~ 1) +
+    bf(MEDSCI_202 | mi() ~ 1) +
+    bf(MEDSCI_204 | mi() ~ 1),
+  data = df_ug,
+  family = skew_normal(),
+  chains = 4, cores = 10, iter = 2000,
+  backend = "cmdstanr"
+)
+
+summary(fit_brms_301)
+```
+
+Same for MEDSCI 302
+
+```{r}
+# Check skewness for MEDSCI 302
+library(moments)
+skew_val <- skewness(df_ug$MEDSCI_302, na.rm = TRUE)
+print(skew_val)
+
+# Set up prior for skew-normal likelihood
+priors <- c(
+  prior(normal(0, 5), class = "Intercept"),
+  prior(normal(0, 5), class = "b"),
+  prior(normal(0, 2), class = "sigma"),
+  prior(normal(-1.2, 0.5), class = "alpha")
+)
+
+
+```
+
+This gives different results comparing to BMA model:
+```{r}
+
+# Specify which predictors can have missing data and use the mi() function
+library(brms)
+
+fit_brms_302 <- brm(
+  bf(MEDSCI_302 ~ mi(MEDSCI_203) + mi(MEDSCI_205) + mi(MEDSCI_202) + mi(MEDSCI_204)) +
+    bf(MEDSCI_203 | mi() ~ 1) + # ~ 1 uses the mean
+    bf(MEDSCI_205 | mi() ~ 1) +
+    bf(MEDSCI_202 | mi() ~ 1) +
+    bf(MEDSCI_204 | mi() ~ 1),
+  data = df_ug,
+  family = skew_normal(),
+  chains = 4, cores = 10, iter = 2000,
+  backend = "cmdstanr"
+)
+
+summary(fit_brms_302)
+
+```
