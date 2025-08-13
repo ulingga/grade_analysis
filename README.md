@@ -137,4 +137,4 @@ The methodologies and system architecture developed here are **directly applicab
 - **Stakeholder Reporting:** Executive dashboard development and automated insights
 - **Data Pipeline Engineering:** Scalable ETL architecture for large, complex datasets
 
-*This project exemplifies my approach to identifying data opportunities within existing organisational processes - the same innovative mindset I would apply to optimizing operational analytics, customer insights, and digital experience platforms in dynamic business environments.*
+*This project exemplifies my approach to identifying data opportunities within existing organisational processes - the same innovative mindset I would apply to optimising operational analytics, customer insights, and digital experience platforms in dynamic business environments.*
