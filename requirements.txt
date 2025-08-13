@@ -1,0 +1,15 @@
+tidyverse
+brms
+readr
+writexl
+dplyr
+factoextra
+cluster
+vegan
+plotly
+tidyr
+ggplot2
+rstatix
+glue
+glmnet
+moments
